@@ -7,21 +7,37 @@
 An open-source solution leveraging GitHub Actions to automate deployment for SAP Integration Suite. It standardizes CI/CD processes, supports package management, parameter updates, and one-click release imports, ensuring consistent and efficient integration across environments
 
 ## 🛠️ Requirements and Setup
-This repository provides GitHub Actions–based CI/CD automation for SAP BTP Integration Suite.
-Below are the prerequisites and high‑level steps required to get started.
+This repository enables automated CI/CD processes for the SAP Integration Suite using **GitHub Actions**. It supports operations such as:
+
+- Downloading and uploading integration packages
+- Synchronizing Design Time ↔ Runtime
+- Deploying artifacts to DEV / TST / PRD
+- Managing externalized parameters
+
+All operations are executed via the **public APIs of the Integration Suite**.
 
 ## ⚙️ Requirements
 
-To use the GitHub‑Actions–based CI/CD automation for **SAP BTP Integration Suite**, ensure the following prerequisites are in place:
+To use the GitHub‑Actions–based CI/CD automation for **SAP Integration Suite**, ensure the following prerequisites are in place:
 
-### 📁 GitHub Repository Structure
-Your repository should contain:
-- **Integration artifacts** exported from SAP Integration Suite (Design Time)
-- **Configuration files** (e.g., externalized parameters per environment)
-- **GitHub Actions workflows** located under:
-  ```
-  .github/workflows/
-  ```
+## 📁 Repository Setup
+
+Prepare a new repository that shall contain the design artifacts downloaded from SAP Integration Suite
+
+### Initial Setup
+
+At the beginning, the repository only needs:
+
+```
+.github/workflows/
+
+```
+
+This folder contains all GitHub Action workflows that you can copy from this repositiry under templates which after adjustment to your needs control the CI/CD logic.
+
+> Note: No integration artifacts or configuration files are needed initially. These are added later through the automation process.
+
+---
 
 ### 🌐 Access to SAP BTP Integration Suite APIs
 The CI/CD pipelines use **publicly documented APIs** of the Integration Suite for:
@@ -38,10 +54,10 @@ Ensure that:
 The repository must allow:
 - Running GitHub Actions
 - Using reusable workflows
-- Accessing GitHub Environments (optional but recommended)
+- Accessing GitHub Environments
 
-### 🔐 Required Service Credentials
-Add the following secrets under `Settings → Secrets and variables → Actions`:
+### 🔐 Required Service Credentials (only examples - depends on your workflows)
+Add the following secrets per GitHub Environment 
 
 | Secret Name          | Purpose                                  |
 |----------------------|-------------------------------------------|
@@ -49,10 +65,9 @@ Add the following secrets under `Settings → Secrets and variables → Actions`
 | `BTP_CLIENT_ID`      | OAuth client ID for API authentication    |
 | `BTP_CLIENT_SECRET`  | OAuth client secret for API authentication |
 
-### 🧩 Optional (Recommended)
-- Separate GitHub environments (`dev`, `qa`, `prod`)
+### 🧩 GitHub Environments
+- Separate GitHub environments (`DEV`, `TST`, `PRD`)
 - Branch protection rules
-- Environment-specific parameter files (e.g., `parameters-dev.json`)
 
 ## Support, Feedback, Contributing
 
