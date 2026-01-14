@@ -56,18 +56,18 @@ The repository must allow:
 - Using reusable workflows
 - Accessing GitHub Environments
 
+### 🧩 GitHub Environments
+- Separate GitHub environments (`DEV`, `TST`, `PRD`)
+- Branch protection rules
+
 ### 🔐 Required Service Credentials (only examples - depends on your workflows)
-Add the following secrets per GitHub Environment 
+Add the following secrets per GitHub Environment - also global secrets and parameters might be needed
 
 | Secret Name          | Purpose                                  |
 |----------------------|-------------------------------------------|
 | `BTP_HOST`           | Base URL of the Integration Suite API     |
 | `BTP_CLIENT_ID`      | OAuth client ID for API authentication    |
 | `BTP_CLIENT_SECRET`  | OAuth client secret for API authentication |
-
-### 🧩 GitHub Environments
-- Separate GitHub environments (`DEV`, `TST`, `PRD`)
-- Branch protection rules
 
 ## Support, Feedback, Contributing
 
