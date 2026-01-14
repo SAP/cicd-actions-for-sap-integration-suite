@@ -6,9 +6,27 @@
 
 An open-source solution leveraging GitHub Actions to automate deployment for SAP Integration Suite. It standardizes CI/CD processes, supports package management, parameter updates, and one-click release imports, ensuring consistent and efficient integration across environments
 
-## Requirements and Setup
+🛠️ Requirements and Setup
+This repository provides GitHub Actions–based CI/CD automation for SAP BTP Integration Suite.
+Below are the prerequisites and high‑level steps required to get started.
 
-*Insert a short description what is required to get your project running...*
+⚙️ Requirements
+
+GitHub Repository containing:
+
+Integration artifacts (exported from Design Time)
+Configuration files
+GitHub Actions workflows (.github/workflows/)
+
+
+Access to SAP BTP Integration Suite APIs
+All pipelines rely on publicly documented APIs for downloading, uploading, deploying, and synchronizing integration content.
+GitHub Actions enabled in your organization/repository
+Service Credentials stored as GitHub Secrets:
+
+BTP_HOST
+BTP_CLIENT_ID
+BTP_CLIENT_SECRET
 
 ## Support, Feedback, Contributing
 
