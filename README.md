@@ -10,23 +10,50 @@ An open-source solution leveraging GitHub Actions to automate deployment for SAP
 This repository provides GitHub Actions–based CI/CD automation for SAP BTP Integration Suite.
 Below are the prerequisites and high‑level steps required to get started.
 
-⚙️ Requirements
 
-GitHub Repository containing:
+## ⚙️ Requirements
 
-Integration artifacts (exported from Design Time)
-Configuration files
-GitHub Actions workflows (.github/workflows/)
+To use the GitHub‑Actions–based CI/CD automation for **SAP BTP Integration Suite**, ensure the following prerequisites are in place:
 
+### 📁 GitHub Repository Structure
+Your repository should contain:
+- **Integration artifacts** exported from SAP Integration Suite (Design Time)
+- **Configuration files** (e.g., externalized parameters per environment)
+- **GitHub Actions workflows** located under:
+  ```
+  .github/workflows/
+  ```
 
-Access to SAP BTP Integration Suite APIs
-All pipelines rely on publicly documented APIs for downloading, uploading, deploying, and synchronizing integration content.
-GitHub Actions enabled in your organization/repository
-Service Credentials stored as GitHub Secrets:
+### 🌐 Access to SAP BTP Integration Suite APIs
+The CI/CD pipelines use **publicly documented APIs** of the Integration Suite for:
+- Package download & upload
+- Synchronization of Design Time ↔ Runtime
+- Deployment of releases
+- Updating external parameters
 
-BTP_HOST
-BTP_CLIENT_ID
-BTP_CLIENT_SECRET
+Ensure that:
+- API access is enabled
+- Required roles/permissions are assigned
+
+### ⚡ GitHub Actions Enabled
+The repository must allow:
+- Running GitHub Actions
+- Using reusable workflows
+- Accessing GitHub Environments (optional but recommended)
+
+### 🔐 Required Service Credentials
+Add the following secrets under `Settings → Secrets and variables → Actions`:
+
+| Secret Name          | Purpose                                  |
+|----------------------|-------------------------------------------|
+| `BTP_HOST`           | Base URL of the Integration Suite API     |
+| `BTP_CLIENT_ID`      | OAuth client ID for API authentication    |
+| `BTP_CLIENT_SECRET`  | OAuth client secret for API authentication |
+
+### 🧩 Optional (Recommended)
+- Separate GitHub environments (`dev`, `qa`, `prod`)
+- Branch protection rules
+- Environment-specific parameter files (e.g., `parameters-dev.json`)
 
 ## Support, Feedback, Contributing
 
