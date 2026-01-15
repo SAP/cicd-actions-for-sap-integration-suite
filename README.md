@@ -1,6 +1,6 @@
 [![REUSE status](https://api.reuse.software/badge/github.com/SAP/cicd-actions-for-sap-integration-suite)](https://api.reuse.software/info/github.com/SAP/cicd-actions-for-sap-integration-suite)
 
-# cicd-actions-for-sap-integration-suite
+# CICD Actions for SAP Integration Suite
 
 ## About this project
 
