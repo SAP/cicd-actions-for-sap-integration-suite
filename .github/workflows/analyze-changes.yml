@@ -1,0 +1,191 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Analyze Changes between 2 GIT Ref/Tag
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      target-env:
+        description: "Environment"
+        required: true
+        type: string
+      base-ref:
+        description: "GIT Base Reference"
+        required: true
+        type: string   
+      target-ref:
+        description: "GIT Target Reference"
+        required: true
+        type: string     
+      perform-deploy:
+        description: "Perform deploy after calculation (true/false)"
+        required: false
+        type: string
+      btp-api-user:
+        description: "BTP Service Key (ClientID) to access Token Endpoint"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP technical User with Access Policy for Integration Suite"
+        required: true
+        type: string
+      btp-token-url:
+        description: "URL on BTP to request Token"
+        required: true
+        type: string    
+      btp-api-url:
+        description: "URL on BTP to access APIs"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+    secrets:
+      BTP_TEC_PASSWORD:
+        required: true
+      BTP_API_PASSWORD:
+        required: true
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo"
+        required: true
+    outputs:
+      package_upload_csv_content:
+        description: "CSV content of packages to upload"
+        value: ${{ jobs.analyze-changes.outputs.package_upload_csv_content }}
+      package_delete_csv_content:
+        description: "CSV content of packages to delete"
+        value: ${{ jobs.analyze-changes.outputs.package_delete_csv_content }}
+      pid_upload_csv_content:
+        description: "CSV content of partner directory entries to upload"
+        value: ${{ jobs.analyze-changes.outputs.pid_upload_csv_content }}
+      pid_delete_csv_content:
+        description: "CSV content of partner directory entries to delete"
+        value: ${{ jobs.analyze-changes.outputs.pid_delete_csv_content }}
+
+jobs:
+  analyze-changes:
+    name: ${{ inputs.base-ref }} -> ${{ inputs.target-ref }}
+    environment: ${{ github.event.inputs.target-env }}
+    runs-on: ubuntu-latest
+    outputs:
+      package_upload_csv_content: ${{ steps.output-csv-contents.outputs.package_upload_content }}
+      package_delete_csv_content: ${{ steps.output-csv-contents.outputs.package_delete_content }}
+      pid_upload_csv_content: ${{ steps.output-csv-contents.outputs.pid_upload_content }}
+      pid_delete_csv_content: ${{ steps.output-csv-contents.outputs.pid_delete_content }}
+
+    steps:
+      - name: Checkout mb-cicd-btp-insuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+         
+      - name: Get Compare JSON from GIT CLI for IntegrationPackages
+        id: get-compare-packages
+        uses: ./cicd-btp-insuite/.github/actions/get-compare-file
+        with:
+          base-ref: ${{ github.event.inputs.base-ref }}
+          target-ref: ${{ github.event.inputs.target-ref }}
+          mode: IntegrationPackages
+ 
+      - name: Get Compare JSON from GIT CLI for PartnerDirectory
+        id: get-compare-partnerdir
+        uses: ./cicd-btp-insuite/.github/actions/get-compare-file
+        with:
+          base-ref: ${{ github.event.inputs.base-ref }}
+          target-ref: ${{ github.event.inputs.target-ref }}
+          mode: PartnerDirectory
+          
+      - name: Prepare IntegrationPackages CSVs
+        id: create-package-csvs
+        uses: ./cicd-btp-insuite/.github/actions/create-csv-of-changed-files
+        with:
+          diff-filename: ${{ steps.get-compare-packages.outputs.files_changed }}
+          base-dir-file: ${{ steps.get-compare-packages.outputs.base_dir_file }}
+          target_dir_file: ${{ steps.get-compare-packages.outputs.target_dir_file }}
+          mode: IntegrationPackages
+
+      - name: Process Package Upload CSV with Regex
+        id: process-package-upload-csv
+        uses: ./cicd-btp-insuite/.github/actions/process-csv-with-regex
+        with:
+          csv_file: ${{ steps.create-package-csvs.outputs.upload-csv }}
+          regex: '~(.+)$'
+
+      - name: Process Package Delete CSV with Regex
+        id: process-package-delete-csv
+        uses: ./cicd-btp-insuite/.github/actions/process-csv-with-regex
+        with:
+          csv_file: ${{ steps.create-package-csvs.outputs.delete-csv }}
+          regex: '~(.+)$'
+
+      - name: Prepare PartnerDirectory CSVs
+        id: create-pid-csvs
+        uses: ./cicd-btp-insuite/.github/actions/create-csv-of-changed-files
+        with:
+          diff-filename: ${{ steps.get-compare-partnerdir.outputs.files_changed }}
+          base-dir-file: ${{ steps.get-compare-partnerdir.outputs.base_dir_file }}
+          target_dir_file: ${{ steps.get-compare-partnerdir.outputs.target_dir_file }}
+          mode: PartnerDirectory
+
+      - name: Output CSV contents as strings
+        id: output-csv-contents
+        run: |
+          echo "=== Package Upload CSV Content ==="
+          cat "${{ steps.create-package-csvs.outputs.upload-csv }}"
+          echo ""
+          
+          echo "package_upload_content<<EOF" >> $GITHUB_OUTPUT
+          cat "${{ steps.create-package-csvs.outputs.upload-csv }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "=== Package Delete CSV Content ==="
+          cat "${{ steps.create-package-csvs.outputs.delete-csv }}"
+          echo ""
+          
+          echo "package_delete_content<<EOF" >> $GITHUB_OUTPUT
+          cat "${{ steps.create-package-csvs.outputs.delete-csv }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "=== Partner Directory Upload CSV Content ==="
+          cat "${{ steps.create-pid-csvs.outputs.upload-csv }}"
+          echo ""
+          
+          echo "pid_upload_content<<EOF" >> $GITHUB_OUTPUT
+          cat "${{ steps.create-pid-csvs.outputs.upload-csv }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "=== Partner Directory Delete CSV Content ==="
+          cat "${{ steps.create-pid-csvs.outputs.delete-csv }}"
+          echo ""
+          
+          echo "pid_delete_content<<EOF" >> $GITHUB_OUTPUT
+          cat "${{ steps.create-pid-csvs.outputs.delete-csv }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-diff-result.zip
+          path: |
+            ${{ steps.get-compare-packages.outputs.files_changed }}
+            ${{ steps.get-compare-packages.outputs.base_dir_file }}
+            ${{ steps.get-compare-packages.outputs.target_dir_file }}
+            ${{ steps.get-compare-partnerdir.outputs.files_changed }}
+            ${{ steps.get-compare-partnerdir.outputs.base_dir_file }}
+            ${{ steps.get-compare-partnerdir.outputs.target_dir_file }}
+            ${{ steps.create-package-csvs.outputs.upload-csv }}
+            ${{ steps.create-package-csvs.outputs.delete-csv }}
+            ${{ steps.create-pid-csvs.outputs.upload-csv }}
+            ${{ steps.create-pid-csvs.outputs.delete-csv }}

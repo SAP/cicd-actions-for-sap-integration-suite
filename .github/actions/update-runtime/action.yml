@@ -1,0 +1,169 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: "Update Runtime from Design Time (Deploy / Undeploy)"
+description: "Composite action to deploy or undeploy package artifacts in SAP BTP Integration Suite."
+
+inputs:
+  target-env:
+    description: "Environment"
+    required: true
+  source-ref:
+    description: "GIT Source Reference"
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  mode:
+    description: "Mode deploy/undeploy"
+    required: true
+  iflow-deploy:
+    description: "iFlow Deploy (based on JSON)"
+    required: false
+  btp-api-user:
+    description: "BTP Service Key (ClientID) to access Token Endpoint"
+    required: true
+  btp-tec-user:
+    description: "BTP technical User with Access Policy for Integration Suite"
+    required: true
+  btp-token-url:
+    description: "URL on BTP to request Token"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  BTP_API_PASSWORD:
+    description: "BTP API Password"
+    required: true
+  BTP_TEC_PASSWORD:
+    description: "BTP Technical User Password"
+    required: true
+    
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.source-ref }}
+        path: btp-insuite
+
+    - name: Request OAuth Token
+      id: get-token
+      uses:  ./cicd-btp-insuite/.github/actions/get-token
+      with:
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        BTP_API_PASSWORD: ${{ inputs.BTP_API_PASSWORD }}
+        BTP_TEC_PASSWORD: ${{ inputs.BTP_TEC_PASSWORD }}
+
+    - name: Get IFLOW IDs of Package
+      if: ${{ (inputs.iflow-deploy == 'true' && inputs.mode == 'deploy') || inputs.mode == 'undeploy' }}
+      id: get-iflow-ids
+      uses:  ./cicd-btp-insuite/.github/actions/get-object-ids-of-package
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+        object-type: "Integration"
+
+    - name: Get MAPPING IDs of Package
+      id: get-mapping-ids
+      uses:  ./cicd-btp-insuite/.github/actions/get-object-ids-of-package
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+        object-type: "MessageMapping"
+
+    - name: Get SCRIPT COLLECTION IDs of Package
+      id: get-sc-ids
+      uses:  ./cicd-btp-insuite/.github/actions/get-object-ids-of-package
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+        object-type: "ScriptCollection"
+
+    - name: Get VALUE MAPPING IDs of Package
+      id: get-vm-ids
+      uses:  ./cicd-btp-insuite/.github/actions/get-object-ids-of-package
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+        object-type: "ValueMapping"
+
+    - name: Add MAPPING IDs to deployment
+      id: add-mappingids-for-deployment
+      uses:  ./cicd-btp-insuite/.github/actions/merge-ids-for-deployment
+      with:
+        package-id: ${{ inputs.package-id }}
+        package-name: ${{ steps.get-package-name.outputs.name }}
+        file:  ${{ steps.get-mapping-ids.outputs.file }}
+        mode: ${{ inputs.mode }}
+
+    - name: Add SCRIPT COLLECTION IDs to deployment
+      id: add-scids-for-deployment
+      uses:  ./cicd-btp-insuite/.github/actions/merge-ids-for-deployment
+      with:
+        package-id: ${{ inputs.package-id }}
+        package-name: ${{ steps.get-package-name.outputs.name }}
+        file:  ${{ steps.get-sc-ids.outputs.file }}
+        mode: ${{ inputs.mode }}
+
+    - name: Add VALUE MAPPING IDs to deployment
+      id: add-vmids-for-deployment
+      uses:  ./cicd-btp-insuite/.github/actions/merge-ids-for-deployment
+      with:
+        package-id: ${{ inputs.package-id }}
+        package-name: ${{ steps.get-package-name.outputs.name }}
+        file:  ${{ steps.get-vm-ids.outputs.file }}
+        mode: ${{ inputs.mode }}
+
+    - name: Add IFLOW IDs from Deployment_INTEGRATION_FLOW.json to deployment
+      if: ${{ (inputs.iflow-deploy == 'true' && inputs.mode == 'deploy') || inputs.mode == 'undeploy' }}
+      id: add-iflows-for-deployment
+      uses:  ./cicd-btp-insuite/.github/actions/add-iflows-for-deployment
+      with:
+        package-id: ${{ inputs.package-id }}
+        package-name: ${{ steps.get-package-name.outputs.name }}
+        file:  ${{ steps.get-iflow-ids.outputs.file }}
+        mode: ${{ inputs.mode }}
+        target-env: ${{ inputs.target-env }}
+
+    - name: Check DeployTask file exists and contains deploytasks
+      id: check-deploytask-file
+      shell: bash
+      run: |
+        FILE="${{ runner.temp }}/DeployTask.${{ inputs.package-id }}"
+        echo "Checking DeployTask file: $FILE"
+        if [ ! -f "$FILE" ]; then
+          echo "File does not exist."
+          echo "file_exists_and_not_empty=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        echo "File exists. Checking JSON structure and deploytasks..."
+        DEPLOYTASK_COUNT=$(jq '.d.deploytasks | select(type=="array") | length' "$FILE" 2>/dev/null)
+        if [ "$DEPLOYTASK_COUNT" -gt 0 ]; then
+          echo "File is valid JSON and contains non-empty deploytasks array."
+          echo "Number of deploytasks found: $DEPLOYTASK_COUNT"
+          echo "file_exists_and_not_empty=true" >> $GITHUB_OUTPUT
+        else
+          echo "File is either not valid JSON or deploytasks array is empty/missing."
+          echo "Number of deploytasks found: 0"
+          echo "file_exists_and_not_empty=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Deploy or Undeploy all package artifacts
+      if: steps.check-deploytask-file.outputs.file_exists_and_not_empty == 'true'
+      uses:  ./cicd-btp-insuite/.github/actions/deploy-package-artifacts
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        file: ${{ runner.temp }}/DeployTask.${{ inputs.package-id }}
+        action: ${{ inputs.mode }}

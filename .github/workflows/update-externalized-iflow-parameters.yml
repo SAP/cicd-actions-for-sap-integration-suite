@@ -1,0 +1,167 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+name: Update Externalized Parameters For IFlow
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      target-env:
+        description: "Environment"
+        required: true
+        type: string
+      iflow-id:
+        description: "IFlow ID"
+        required: true
+        type: string
+      iflow-deploy:
+        description: "Deploy iFlow?"
+        required: true
+        type: string
+      source-ref:
+        description: "Source Reference (e.g. main)"
+        required: true
+        type: string        
+      btp-api-user:
+        description: "BTP API User"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP TEC User"
+        required: true
+        type: string
+      btp-token-url:
+        description: "BTP Token URL"
+        required: true
+        type: string    
+      btp-api-url:
+        description: "BTP API URL"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string     
+    secrets:
+       BTP_API_PASSWORD:
+        required: true
+       BTP_TEC_PASSWORD:
+        required: true
+       GIT_CICD_TOKEN:
+         description: "GIT Token of remote CICD Repo"
+         required: true
+
+jobs:
+  update-externalized-parameters-for-iflow:
+    name: Update IFLOW ${{ inputs.iflow-id }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target-env }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
+          path: btp-insuite
+
+      - name: Checkout mb-cicd-btp-insuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      - name: Request OAuth Token
+        id: get-token
+        uses: ./cicd-btp-insuite/.github/actions/get-token
+        with:
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+      - name: Get PackageID for IFlow
+        id: get-packageid-for-iflow
+        uses: ./cicd-btp-insuite/.github/actions/get-packageid-for-iflow
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          iflow-id: '${{ inputs.iflow-id }}'
+
+      - name: Update Configuration Parameters
+        id: update-config-params
+        uses: ./cicd-btp-insuite/.github/actions/update-config-parameters
+        with:
+          package-id: '${{ steps.get-packageid-for-iflow.outputs.packageID }}'
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          target-env: '${{ inputs.target-env }}'
+          iflow-id: '${{ inputs.iflow-id }}'
+
+  deploy-iflow:
+    needs: update-externalized-parameters-for-iflow
+    name: Deploy IFLOW ${{ inputs.iflow-id }}
+    if: inputs.iflow-deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target-env }}
+
+    steps:
+      - name: Checkout mb-cicd-btp-insuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      - name: Request OAuth Token
+        id: get-token
+        uses: ./cicd-btp-insuite/.github/actions/get-token
+        with:
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+      - name: Generate Deployment JSON
+        id: generate-deployment-file
+        run: |
+          # Create deployment file
+          DEPLOYMENT_FILE="deployment-tasks.json"
+
+          # Generate JSON using jq
+          jq -n --arg id "${{ inputs.iflow-id }}" \
+            '{
+            "d": {
+              "deploytasks": [
+                {
+                    "id": $id,
+                         "type": "Integration"
+          	              }
+          	            ]
+          	          }
+          	        }' > "$DEPLOYMENT_FILE"
+
+                # Display the generated file for verification
+                echo "Generated deployment file:"
+              cat "$DEPLOYMENT_FILE"
+      
+          	      # Set output for use in subsequent steps
+          	      echo "deployment-file=$DEPLOYMENT_FILE" >> $GITHUB_OUTPUT
+ 
+      - name: Deploy Package Artifacts
+        uses: ./cicd-btp-insuite/.github/actions/deploy-package-artifacts
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          file: ${{ steps.generate-deployment-file.outputs.deployment-file }}
+          action: Deploy

@@ -1,0 +1,75 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+name: Delete Directory from GIT
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      id:
+        description: "ID to get deleted"
+        required: true
+        type: string
+      mode:
+        description: "Mode IntegrationPackages/PartnerDirectory"
+        required: true
+        type: string
+      source-ref:
+        description: "GIT Source Reference"
+        required: true
+        type: string
+      commit-message:
+        description: "Commit Message"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+    secrets:
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo"
+        required: true
+          
+permissions:
+  contents: write
+
+jobs:
+  delete-from-git:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
+          path: btp-insuite
+          
+      - name: Checkout mb-cicd-btp-insuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+
+      - name: Delete Dir from GIT
+        id: delete-package-dir-from-git
+        uses: ./cicd-btp-insuite/.github/actions/delete-dir-from-git
+        with:
+          id: ${{ inputs.id }}
+          mode: ${{ inputs.mode }}             
+
+      - name: GIT Commit
+        id: git-commit
+        uses: ./cicd-btp-insuite/.github/actions/git-commit
+        with:
+          comment: ${{ inputs.commit-message }}          
+       

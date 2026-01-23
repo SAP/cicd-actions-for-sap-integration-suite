@@ -1,0 +1,170 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Parse CSV to JSON Arrays'
+description: 'Parses delete and upload comma-separated strings, filters duplicates, and returns JSON arrays for deployment orchestration.'
+inputs:
+  delete-ids:
+    description: 'Comma-separated string of IDs to delete.'
+    required: false
+    default: ''
+  upload-ids:
+    description: 'Comma-separated string of IDs to upload.'
+    required: false
+    default: ''
+  empty-array-default:
+    description: 'Default value to use in JSON arrays when they are empty (e.g., "skip" or "none"). If not provided, empty arrays remain as [].'
+    required: false
+    default: ''
+outputs:
+  to_delete:
+    description: 'JSON array of IDs to delete (filtered to exclude IDs that are also in upload).'
+    value: ${{ steps.parse_csvs.outputs.to_delete }}
+  to_upload:
+    description: 'JSON array of IDs to upload.'
+    value: ${{ steps.parse_csvs.outputs.to_upload }}
+  all_ids:
+    description: 'JSON array of all unique IDs (union of to_delete and to_upload).'
+    value: ${{ steps.parse_csvs.outputs.all_ids }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Parse CSV Strings to JSON Arrays
+      id: parse_csvs
+      shell: bash
+      env:
+        DELETE_IDS: ${{ inputs.delete-ids }}
+        UPLOAD_IDS: ${{ inputs.upload-ids }}
+        EMPTY_ARRAY_DEFAULT: ${{ inputs.empty-array-default }}
+      run: |
+        set -e
+        
+        echo "::group::Input Parameters"
+        echo "Delete IDs string: $DELETE_IDS"
+        echo "Upload IDs string: $UPLOAD_IDS"
+        if [[ -n "$EMPTY_ARRAY_DEFAULT" ]]; then
+          echo "Empty array default value: $EMPTY_ARRAY_DEFAULT"
+        fi
+        echo "::endgroup::"
+        
+        # Helper function to parse comma-separated string into bash array
+        parse_string_ids() {
+          local str="$1"
+          local arr=()
+          if [[ -n "$str" ]]; then
+            IFS=',' read -ra ids <<< "$str"
+            for id in "${ids[@]}"; do
+              id="${id// /}" # remove spaces
+              if [[ -n "$id" ]]; then
+                arr+=("$id")
+              fi
+            done
+          fi
+          echo "${arr[@]}"
+        }
+        
+        # Parse delete and upload IDs from strings
+        echo "::group::Parsing CSV Strings"
+        delete_arr=( $(parse_string_ids "$DELETE_IDS") )
+        echo "  - Delete array count: ${#delete_arr[@]}"
+        if [[ ${#delete_arr[@]} -gt 0 ]]; then
+          echo "  - Delete IDs: ${delete_arr[@]}"
+        fi
+        
+        upload_arr=( $(parse_string_ids "$UPLOAD_IDS") )
+        echo "  - Upload array count: ${#upload_arr[@]}"
+        if [[ ${#upload_arr[@]} -gt 0 ]]; then
+          echo "  - Upload IDs: ${upload_arr[@]}"
+        fi
+        echo "::endgroup::"
+        
+        # Remove any ID from delete_arr that is also in upload_arr
+        echo "::group::Filtering Duplicates"
+        filtered_delete=()
+        for del_id in "${delete_arr[@]}"; do
+          skip=false
+          for up_id in "${upload_arr[@]}"; do
+            if [[ "$del_id" == "$up_id" ]]; then
+              echo "Removing '$del_id' from delete list (found in upload list)"
+              skip=true
+              break
+            fi
+          done
+          if ! $skip; then
+            filtered_delete+=("$del_id")
+          fi
+        done
+        echo "Filtered delete array count: ${#filtered_delete[@]}"
+        if [[ ${#filtered_delete[@]} -gt 0 ]]; then
+          echo "Filtered delete IDs: ${filtered_delete[@]}"
+        fi
+        echo "::endgroup::"
+        
+        # Convert to JSON arrays
+        echo "::group::Converting to JSON Arrays"
+        
+        # Build to_delete JSON array
+        if [[ ${#filtered_delete[@]} -eq 0 && -n "$EMPTY_ARRAY_DEFAULT" ]]; then
+          to_delete_json="[\"$EMPTY_ARRAY_DEFAULT\"]"
+          echo "Created to_delete JSON array with default value (empty array)"
+        else
+          to_delete_json="["
+          for i in "${!filtered_delete[@]}"; do
+            to_delete_json+="\"${filtered_delete[$i]}\""
+            if [[ $i -lt $((${#filtered_delete[@]}-1)) ]]; then
+              to_delete_json+=","
+            fi
+          done
+          to_delete_json+="]"
+          echo "Created to_delete JSON array with ${#filtered_delete[@]} items"
+        fi
+        
+        # Build to_upload JSON array
+        if [[ ${#upload_arr[@]} -eq 0 && -n "$EMPTY_ARRAY_DEFAULT" ]]; then
+          to_upload_json="[\"$EMPTY_ARRAY_DEFAULT\"]"
+          echo "Created to_upload JSON array with default value (empty array)"
+        else
+          to_upload_json="["
+          for i in "${!upload_arr[@]}"; do
+            to_upload_json+="\"${upload_arr[$i]}\""
+            if [[ $i -lt $((${#upload_arr[@]}-1)) ]]; then
+              to_upload_json+=","
+            fi
+          done
+          to_upload_json+="]"
+          echo "Created to_upload JSON array with ${#upload_arr[@]} items"
+        fi
+        
+        # Build all_ids JSON array (union of filtered_delete and upload_arr)
+        all_ids=("${filtered_delete[@]}" "${upload_arr[@]}")
+        if [[ ${#all_ids[@]} -eq 0 && -n "$EMPTY_ARRAY_DEFAULT" ]]; then
+          all_ids_json="[\"$EMPTY_ARRAY_DEFAULT\"]"
+          echo "Created all_ids JSON array with default value (empty array)"
+        else
+          all_ids_json="["
+          for i in "${!all_ids[@]}"; do
+            all_ids_json+="\"${all_ids[$i]}\""
+            if [[ $i -lt $((${#all_ids[@]}-1)) ]]; then
+              all_ids_json+=","
+            fi
+          done
+          all_ids_json+="]"
+          echo "Created all_ids JSON array with ${#all_ids[@]} items (union of delete + upload)"
+        fi
+        
+        echo "::endgroup::"
+        
+        # Set outputs
+        echo "to_delete=$to_delete_json" >> $GITHUB_OUTPUT
+        echo "to_upload=$to_upload_json" >> $GITHUB_OUTPUT
+        echo "all_ids=$all_ids_json" >> $GITHUB_OUTPUT
+        
+        # Display results
+        echo "::group::Output Results"
+        echo "to_delete: $to_delete_json"
+        echo "to_upload: $to_upload_json"
+        echo "all_ids: $all_ids_json"
+        echo "::endgroup::"

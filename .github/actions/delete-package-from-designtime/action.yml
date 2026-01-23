@@ -1,0 +1,47 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Sprünken)
+#
+name: Delete Package from CPI Design Time
+description: Delete Package from CPI Design Time
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+    type: string
+  btp-api-url:
+    description: "BTP API URL"
+    required: true
+    type: string   
+  package-id:
+    description: "Package ID"
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: delete-package
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGEID: ${{ inputs.package-id }}
+        
+      run: |
+        echo "Deleting Package via API Call $BTP_API_URL/api/v1/IntegrationPackages('$PACKAGEID')"
+
+        curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/IntegrationPackages('$PACKAGEID')" \
+          -H "Authorization: $BEARER_TOKEN")
+        
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+        
+        if [ "$HTTP_STATUS" != "202" ] && [ "$HTTP_STATUS" != "404" ]; then
+          echo "Error: HTTP status $HTTP_STATUS received while trying to delete package"
+          echo "Response body: $BODY"
+          exit 1
+        fi

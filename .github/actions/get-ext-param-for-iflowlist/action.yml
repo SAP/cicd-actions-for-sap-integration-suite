@@ -1,0 +1,100 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Get external Parameter for a list of IFLOW IDs
+description: Get external Parameter for a list of IFLOW IDs
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  package-name:
+    description: "Package Name"
+    required: true
+  file:
+    description: "File with IFLOW IDs"
+    required: true
+
+outputs:
+  path:
+    description: 'Directory of generated JSON file'
+    value: ${{ steps.get-ext-parameters.outputs.path }}
+    
+runs:
+  using: "composite"
+  steps:
+    - id: get-ext-parameters
+      shell: bash
+      working-directory: btp-insuite/IntegrationPackages
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        FILE: ${{ inputs.file }}
+      run: |
+        echo "Reading $FILE"
+        IFLOWLIST=$(<"$FILE")
+       
+        echo "Parsing input Parameter IFLOWLIST ..."
+        # Initialize an empty array for all the cleaned JSON objects
+        all_jsons="[]"
+        while read -r ID NAME; do
+          echo "Exporting Parameters for IFLOW $ID ($NAME)"
+  
+          curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/IntegrationDesigntimeArtifacts(Id='$ID',Version='active')/Configurations?\$format=json" \
+          -H "Authorization: $BEARER_TOKEN")
+          HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+          BODY=$(echo "$curl_response" | sed '$d')
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Error: HTTP status $HTTP_STATUS received while requesting IFLOW Parameters"
+            echo "Response body: $BODY"
+            exit 1
+          fi
+          # Clean the JSON by removing __metadata, reorder fields, and change ParameterValue to ParameterValues.Default
+          CLEANED_BODY=$(echo "$BODY" | jq --arg id "$ID" --arg name "$NAME" '
+          {
+            ArtifactID: $id,
+            ArtifactName: $name,
+            ArtifactType: "INTEGRATION_FLOW",
+            Parameters: (.d.results | map(del(.["__metadata"])) | map({
+              DataType: .DataType,
+              Description: .Description,
+              ParameterKey: .ParameterKey,
+              ParameterValues: {
+                Default: .ParameterValue
+              }
+            }))
+          }')
+          # Append this object to the array in all_jsons
+          all_jsons=$(echo "$all_jsons" | jq --argjson newObj "$CLEANED_BODY" '. + [$newObj]')
+        done < <(echo "$IFLOWLIST" | jq -r '.d.results[] | "\(.Id) \(.Name)"')
+        # Add header information
+        FINAL_JSON=$(jq -n --arg pkgName "$PACKAGENAME" --arg pkgID "$PACKAGEID" --argjson artifacts "$all_jsons" '
+          {
+            PackageIntegrationFlowParameters: {
+              PackageName: $pkgName,
+              PackageID: $pkgID,
+              Artifacts: $artifacts
+            }
+          }
+        ')
+        # Output the final JSON array containing all IFLOW parameters
+        DIR="$PACKAGENAME~$PACKAGEID/Configuration"
+        if [ ! -d "$DIR" ]; then
+          mkdir -p "$DIR"
+        fi
+        PATH="$DIR/ConfigParams_INTEGRATION_FLOW.json.tmp"
+        echo "$FINAL_JSON" > "$PATH"
+        
+        # Set output parameter with the full path to the JSON file
+        echo "path=$PATH" >> $GITHUB_OUTPUT

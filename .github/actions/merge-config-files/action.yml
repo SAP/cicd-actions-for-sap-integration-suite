@@ -1,0 +1,241 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: 'XML Configuration Merger'
+description: 'Merges temporary XML configuration with existing XML based on specific rules'
+inputs:
+  temp_xml_path:
+    description: 'Path to the temporary XML file (e.g., /xyz/ConfigParams_INTEGRATION_FLOW.xml.tmp)'
+    required: true
+outputs:
+  merged_file_path:
+    description: 'Path to the created merged XML file'
+    value: ${{ steps.merge.outputs.merged_file_path }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      shell: bash
+      run: |
+        npm install xml2js
+    
+    - name: Merge XML files
+      id: merge
+      shell: bash
+      run: |
+        cat << 'EOF' > merge_xml.js
+        const fs = require('fs');
+        const xml2js = require('xml2js');
+        const path = require('path');
+
+        async function mergeXMLFiles(tempFilePath) {
+            try {
+                const baseFilePath = tempFilePath.replace('.tmp', '');
+                const mergedFilePath = baseFilePath.replace('.xml', '.xml.merged');
+
+                console.log(`Temp file: ${tempFilePath}`);
+                console.log(`Base file: ${baseFilePath}`);
+                console.log(`Merged file: ${mergedFilePath}`);
+
+                if (!fs.existsSync(tempFilePath)) {
+                    throw new Error(`Temporary XML file not found: ${tempFilePath}`);
+                }
+
+                const tempXmlContent = fs.readFileSync(tempFilePath, 'utf8');
+                const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true });
+                const builder = new xml2js.Builder({
+                    xmldec: { version: '1.0', encoding: 'utf-8' },
+                    renderOpts: { pretty: true, indent: '  ' }
+                });
+
+                const tempXmlData = normalizeStructure(await parser.parseStringPromise(tempXmlContent));
+
+                let existingXmlData = null;
+                if (fs.existsSync(baseFilePath)) {
+                    const existingXmlContent = fs.readFileSync(baseFilePath, 'utf8');
+                    existingXmlData = normalizeStructure(await parser.parseStringPromise(existingXmlContent));
+                }
+
+                const mergedXmlData = mergeXMLData(tempXmlData, existingXmlData);
+
+                const mergedXmlContent = builder.buildObject(mergedXmlData);
+                fs.writeFileSync(mergedFilePath, mergedXmlContent);
+
+                console.log(`✅ Successfully created merged XML file: ${mergedFilePath}`);
+                return mergedFilePath;
+
+            } catch (error) {
+                console.error('❌ Error merging XML files:', error);
+                process.exit(1);
+            }
+        }
+
+        function normalizeStructure(xmlData) {
+            if (!xmlData || !xmlData.PackageIntegrationFlowParameters) return xmlData;
+
+            let node = xmlData.PackageIntegrationFlowParameters;
+            while (node.PackageIntegrationFlowParameters) {
+                node = node.PackageIntegrationFlowParameters;
+            }
+
+            return { PackageIntegrationFlowParameters: node };
+        }
+
+        function mergeXMLData(tempData, existingData) {
+            const merged = JSON.parse(JSON.stringify(tempData));
+            if (!existingData) return merged;
+
+            const tempArtifacts = getArtifacts(tempData);
+            const existingArtifacts = getArtifacts(existingData);
+            if (!tempArtifacts || !existingArtifacts) return merged;
+
+            const tempArtifactsArray = Array.isArray(tempArtifacts) ? tempArtifacts : [tempArtifacts];
+            const existingArtifactsArray = Array.isArray(existingArtifacts) ? existingArtifacts : [existingArtifacts];
+
+            tempArtifactsArray.forEach((tempArtifact, artifactIndex) => {
+                const matchingExistingArtifact = findMatchingArtifact(tempArtifact, existingArtifactsArray);
+
+                if (matchingExistingArtifact && tempArtifact.Parameters) {
+                    const tempParams = Array.isArray(tempArtifact.Parameters) ? tempArtifact.Parameters : [tempArtifact.Parameters];
+                    const existingParams = Array.isArray(matchingExistingArtifact.Parameters) ? matchingExistingArtifact.Parameters : [matchingExistingArtifact.Parameters];
+
+                    tempParams.forEach((tempParam, paramIndex) => {
+                        const matchingExistingParam = findMatchingParameter(tempParam, existingParams);
+
+                        if (matchingExistingParam && matchingExistingParam.ParameterValues) {
+                            const mergedParamValues = { ...tempParam.ParameterValues };
+
+                            if (matchingExistingParam.ParameterValues.TST) {
+                                mergedParamValues.TST = matchingExistingParam.ParameterValues.TST;
+                            }
+                            if (matchingExistingParam.ParameterValues.PRD) {
+                                mergedParamValues.PRD = matchingExistingParam.ParameterValues.PRD;
+                            }
+
+                            const mergedArtifacts = getArtifacts(merged);
+                            const mergedArtifactsArray = Array.isArray(mergedArtifacts) ? mergedArtifacts : [mergedArtifacts];
+
+                            if (Array.isArray(mergedArtifactsArray[artifactIndex].Parameters)) {
+                                mergedArtifactsArray[artifactIndex].Parameters[paramIndex].ParameterValues = mergedParamValues;
+                            } else {
+                                mergedArtifactsArray[artifactIndex].Parameters.ParameterValues = mergedParamValues;
+                            }
+                        }
+                    });
+                }
+            });
+
+            return merged;
+        }
+
+        function getArtifacts(xmlData) {
+            return xmlData.PackageIntegrationFlowParameters?.Artifacts || null;
+        }
+
+        function findMatchingArtifact(tempArtifact, existingArtifacts) {
+            return existingArtifacts.find(existing =>
+                existing.ArtifactID === tempArtifact.ArtifactID ||
+                existing.ArtifactName === tempArtifact.ArtifactName
+            );
+        }
+
+        function findMatchingParameter(tempParam, existingParams) {
+            return existingParams.find(existing =>
+                existing.ParameterKey === tempParam.ParameterKey
+            );
+        }
+
+        const tempFilePath = process.argv[2];
+        if (!tempFilePath) {
+            console.error('Please provide the temporary XML file path as an argument');
+            process.exit(1);
+        }
+
+        mergeXMLFiles(tempFilePath).then(mergedPath => {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `merged_file_path=${mergedPath}\n`);
+        });
+        EOF
+
+        node merge_xml.js "${{ inputs.temp_xml_path }}"
+    
+    - name: Verify merged file
+      shell: bash
+      run: |
+        MERGED_FILE="${{ inputs.temp_xml_path }}"
+        MERGED_FILE="${MERGED_FILE%.tmp}.merged"
+        
+        if [ -f "$MERGED_FILE" ]; then
+          echo "✅ Merged XML file created successfully: $MERGED_FILE"
+          echo "File size: $(wc -c < "$MERGED_FILE") bytes"
+          echo "First few lines:"
+          head -10 "$MERGED_FILE"
+        else
+          echo "❌ Failed to create merged XML file"
+          exit 1
+        fi
+
+    - name: Cleanup files
+      shell: bash
+      run: |
+        TEMP_FILE="${{ inputs.temp_xml_path }}"
+        BASE_FILE="${TEMP_FILE%.tmp}"
+        MERGED_FILE="${BASE_FILE}.merged"
+        
+        echo "🧹 Starting cleanup process..."
+        
+        # Step 1: Delete existing .xml file if it exists
+        if [ -f "$BASE_FILE" ]; then
+          echo "🗑️  Deleting existing file: $BASE_FILE"
+          rm "$BASE_FILE"
+        fi
+        
+        # Step 2: Rename .xml.merged to .xml (remove .merged extension)
+        if [ -f "$MERGED_FILE" ]; then
+          echo "📝 Renaming $MERGED_FILE to $BASE_FILE"
+          mv "$MERGED_FILE" "$BASE_FILE"
+        fi
+        
+        # Step 3: Delete the .tmp file
+        if [ -f "$TEMP_FILE" ]; then
+          echo "🗑️  Deleting temporary file: $TEMP_FILE"
+          rm "$TEMP_FILE"
+        fi
+        
+        echo "✅ Cleanup completed successfully!"
+        echo "📁 Final result: $BASE_FILE"
+
+    - name: Cleanup node_modules
+      shell: bash
+      run: |
+        echo "🧹 Cleaning up temporary files and directories..."
+        
+        if [ -d "node_modules" ]; then
+          echo "🗑️  Removing node_modules directory..."
+          rm -rf node_modules
+        fi
+        
+        if [ -f "package-lock.json" ]; then
+          echo "🗑️  Removing package-lock.json..."
+          rm package-lock.json
+        fi
+        
+        if [ -f "package.json" ]; then
+          echo "🗑️  Removing package.json..."
+          rm package.json
+        fi
+        
+        if [ -f "merge_xml.js" ]; then
+          echo "🗑️  Removing merge_xml.js..."
+          rm merge_xml.js
+        fi
+        
+        echo "✅ All temporary files cleaned up successfully!"
