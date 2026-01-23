@@ -9,10 +9,11 @@ An open-source solution leveraging GitHub Actions to automate deployment for SAP
 ## 🛠️ Requirements and Setup
 This repository enables automated CI/CD processes for the SAP Integration Suite using **GitHub Actions**. It supports operations such as:
 
-- Downloading and uploading integration packages
+- Downloading and uploading integration packages / partner directory entries
 - Synchronizing Design Time ↔ Runtime
-- Deploying artifacts to DEV / TST / PRD
+- Autmatic deployment of mappings, script collections and value mappings to DEV / TST / PRD
 - Managing externalized parameters
+- Managing deployments of IFLOWs
 
 All operations are executed via the **public APIs of the Integration Suite**.
 
@@ -42,9 +43,11 @@ This folder contains all GitHub Action workflows that you can copy from this rep
 ### 🌐 Access to SAP BTP Integration Suite APIs
 The CI/CD pipelines use **publicly documented APIs** of the Integration Suite for:
 - Package download & upload
+- Partner Directoy download & upload
 - Synchronization of Design Time ↔ Runtime
 - Deployment of releases
 - Updating external parameters
+- Deploy IFLOWs per configuration
 
 Ensure that:
 - API access is enabled
@@ -59,15 +62,6 @@ The repository must allow:
 ### 🧩 GitHub Environments
 - Separate GitHub environments (`DEV`, `TST`, `PRD`)
 - Branch protection rules
-
-### 🔐 Required Service Credentials (only examples - depends on your workflows)
-Add the following secrets per GitHub Environment - also global secrets and parameters might be needed
-
-| Secret Name         | Purpose                                    |
-|---------------------|--------------------------------------------|
-| `BTP_HOST`          | Base URL of the Integration Suite API      |
-| `BTP_CLIENT_ID`     | OAuth client ID for API authentication     |
-| `BTP_CLIENT_SECRET` | OAuth client secret for API authentication |
 
 ## Support, Feedback, Contributing
 
