@@ -1,0 +1,126 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: "Get Compare"
+description: "Get list of changed files between two refs using Git CLI"
+
+inputs:
+  base-ref:
+    description: "Source Git reference (branch or tag)"
+    required: true
+  target-ref:
+    description: "Target Git reference (branch or tag)"
+    required: true
+  mode:
+    description: "Mode IntegrationPackages/PartnerDirectory"
+    required: true
+
+outputs:
+  files_changed:
+    description: "List of changed files"
+    value: ${{ steps.git-diff.outputs.files_changed }}
+  base_dir_file:
+    description: "Directory listing of base ref"
+    value: ${{ steps.git-diff.outputs.base_dir_file }}
+  target_dir_file:
+    description: "Directory listing of target ref"
+    value: ${{ steps.git-diff.outputs.target_dir_file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        path: btp-insuite
+
+    - id: detect-refs
+      shell: bash
+      working-directory: btp-insuite
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        TARGET_REF: ${{ inputs.target-ref }}
+      run: |
+        set -euo pipefail
+
+        detect_remote_ref_type() {
+          local ref_name=$1
+          local full_ref
+
+          full_ref=$(git ls-remote --heads origin "$ref_name" | awk '{print $2}')
+          if [[ -n "$full_ref" ]]; then
+            echo "$full_ref"
+            return
+          fi
+
+          full_ref=$(git ls-remote --tags origin "$ref_name" | awk '{print $2}')
+          if [[ -n "$full_ref" ]]; then
+            echo "$full_ref"
+            return
+          fi
+
+          echo "❌ Ref '$ref_name' not found in remote" >&2
+          exit 1
+        }
+
+        BASE_FULL_REF=$(detect_remote_ref_type "$BASE_REF")
+        TARGET_FULL_REF=$(detect_remote_ref_type "$TARGET_REF")
+
+        echo "✅ Resolved base-ref: $BASE_FULL_REF"
+        echo "✅ Resolved target-ref: $TARGET_FULL_REF"
+
+        echo "base-full-ref=$BASE_FULL_REF" >> "$GITHUB_OUTPUT"
+        echo "target-full-ref=$TARGET_FULL_REF" >> "$GITHUB_OUTPUT"
+
+    - id: git-diff
+      shell: bash
+      working-directory: btp-insuite
+      env:
+        BASE_FULL_REF: ${{ steps.detect-refs.outputs.base-full-ref }}
+        TARGET_FULL_REF: ${{ steps.detect-refs.outputs.target-full-ref }}
+      run: |
+        set -euo pipefail
+
+        echo "🔍 Comparing $BASE_FULL_REF...$TARGET_FULL_REF"
+
+        # Fetch both resolved refs into temporary local refs
+        git fetch origin "$BASE_FULL_REF:refs/temp/base"
+        git fetch origin "$TARGET_FULL_REF:refs/temp/target"
+
+        # Increase rename detection threshold
+        git config diff.renameLimit 9999
+        
+        DIFFFILE="${{ runner.temp }}/${{ inputs.mode }}_gittdiff.txt"
+        BASE_DIR_FILE="${{ runner.temp }}/${{ inputs.mode }}_base_dir.txt"
+        TARGET_DIR_FILE="${{ runner.temp }}/${{ inputs.mode }}_target_dir.txt"
+        
+        # Run git diff and store output in tmp file
+        git diff --name-status refs/temp/base refs/temp/target -- "${{ inputs.mode }}" > "$DIFFFILE"
+
+        # Get only first-level subfolders (directories) for both refs
+        if git ls-tree --name-only refs/temp/base | grep -q "^${{ inputs.mode }}$"; then
+          git ls-tree refs/temp/base:${{ inputs.mode }} | awk '$1 == "040000" {print $4}' > "$BASE_DIR_FILE"
+        else
+          echo "" > "$BASE_DIR_FILE"
+        fi
+
+        if git ls-tree --name-only refs/temp/target | grep -q "^${{ inputs.mode }}$"; then
+          git ls-tree refs/temp/target:${{ inputs.mode }} | awk '$1 == "040000" {print $4}' > "$TARGET_DIR_FILE"
+        else
+          echo "" > "$TARGET_DIR_FILE"
+        fi
+
+        echo "files_changed=$DIFFFILE" >> $GITHUB_OUTPUT
+        echo "base_dir_file=$BASE_DIR_FILE" >> $GITHUB_OUTPUT
+        echo "target_dir_file=$TARGET_DIR_FILE" >> $GITHUB_OUTPUT
+
+        echo $DIFFFILE
+        cat $DIFFFILE
+        echo $BASE_DIR_FILE
+        cat $BASE_DIR_FILE
+        echo $TARGET_DIR_FILE
+        cat $TARGET_DIR_FILE

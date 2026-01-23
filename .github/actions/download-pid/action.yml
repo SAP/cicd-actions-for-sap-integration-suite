@@ -1,0 +1,109 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'download-pid'
+description: 'Composite action to download Partner Directory entry and process parameters.'
+inputs:
+  bearer-token:
+    description: 'BEARER Token to access Integration Suite Artifacts'
+    required: true
+    type: string
+  partner-id:
+    description: 'Partner ID'
+    required: true
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check PartnerID Existence
+      id: check-existence
+      uses: ./cicd-btp-insuite/.github/actions/check-partnerid-exists
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+
+    - name: GET StringParameters
+      id: get-parameter-sp
+      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+        parameter-type: StringParameters
+
+    - name: Clean JSON StringParameters
+      id: clean-json-sp
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ steps.get-parameter-sp.outputs.file }}
+        keep_nodes: d.results.Pid,d.results.Id,d.results.Value
+
+    - name: GET AlternativePartners
+      id: get-parameter-ap
+      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+        parameter-type: AlternativePartners
+
+    - name: Clean JSON AlternativePartners
+      id: clean-json-ap
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ steps.get-parameter-ap.outputs.file }}
+        keep_nodes: d.results.Pid,d.results.Agency, d.results.Id, d.results.Scheme
+
+    - name: GET AuthorizedUsers
+      id: get-parameter-au
+      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+        parameter-type: AuthorizedUsers
+
+    - name: Clean JSON AuthorizedUsers
+      id: clean-json-au
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ steps.get-parameter-au.outputs.file }}
+        keep_nodes: d.results.Pid,d.results.User
+
+    - name: GET BinaryParameters
+      id: get-parameter-bp
+      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+        parameter-type: BinaryParameters
+
+    - name: Clean JSON BinaryParameters
+      id: clean-json-bp
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ steps.get-parameter-bp.outputs.file }}
+        keep_nodes: d.results.Pid,d.results.ContentType, d.results.Id, d.results.Value
+
+    - name: Create Partner Directory
+      uses: ./cicd-btp-insuite/.github/actions/create-partner-directory
+      with:
+        partner-id: ${{ inputs.partner-id }}
+        StringParameters: ${{ steps.get-parameter-sp.outputs.file }}
+        AlternativePartners: ${{ steps.get-parameter-ap.outputs.file }}
+        AuthorizedUsers: ${{ steps.get-parameter-au.outputs.file }}
+        BinaryParameters: ${{ steps.get-parameter-bp.outputs.file }}
+
+    - name: Decode BinaryParameters and update JSON
+      uses: ./cicd-btp-insuite/.github/actions/decode-binary-parameters
+      with:
+        partner-id: ${{ inputs.partner-id }}
+        output-dir: btp-insuite/PartnerDirectory

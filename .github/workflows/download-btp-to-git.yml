@@ -1,0 +1,163 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+name: Download CPI Package into GIT
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      source-env:
+        description: "Source Environment"
+        required: true
+        type: string
+      target-ref:
+        description: "GIT Target Reference"
+        required: true
+        type: string
+      ids:
+        description: "IDs (1..n) to be downloaded"
+        required: true
+        type: string
+      mode:
+        description: "Mode IntegrationPackages/PartnerDirectory"
+        required: true
+        type: string
+      commit-message:
+        description: "Commit Message"
+        required: true
+        type: string
+      btp-api-user:
+        description: "BTP Service Key (ClientID) to access Token Endpoint"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP technical User with Access Policy for Integration Suite"
+        required: true
+        type: string
+      btp-token-url:
+        description: "URL on BTP to request Token"
+        required: true
+        type: string
+      btp-api-url:
+        description: "URL on BTP to access APIs"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+        
+    secrets:
+      BTP_API_PASSWORD:
+        description: "Client Secret for API User"
+        required: true  
+      BTP_TEC_PASSWORD:
+        description: "Passsword of technical User"
+        required: true
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo"
+        required: true
+          
+permissions:
+  contents: write
+
+jobs:
+  preparation:
+    name: Prepare ${{ inputs.mode }} ID(s) 
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.source-env }}
+    outputs:
+      ids-json: ${{ steps.parse-ids.outputs.ids-json }}		
+
+    steps:
+      - name: Parse IDs
+        id: parse-ids
+        run: |
+          # Convert comma-separated string to JSON array
+          IFS=',' read -ra IDS <<< "${{ inputs.ids }}"
+          JSON_ARRAY="["
+          for i in "${!IDS[@]}"; do
+          # Trim whitespace
+          ID=$(echo "${IDS[$i]}" | xargs)
+          if [ $i -gt 0 ]; then
+          JSON_ARRAY="${JSON_ARRAY},"
+          fi
+          JSON_ARRAY="${JSON_ARRAY}\"${ID}\""
+          done
+          JSON_ARRAY="${JSON_ARRAY}]"
+          echo "ids-json=${JSON_ARRAY}" >> $GITHUB_OUTPUT
+          
+          cat $GITHUB_OUTPUT
+
+  download-id:
+    needs: preparation
+    name: ${{ matrix.id }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.source-env }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        id: ${{ fromJson(needs.preparation.outputs.ids-json) }}
+
+    steps:
+      - name: Checkout mb-cicd-btp-insuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+          ref: ${{ inputs.workflow-ref }}
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target-ref }}
+          path: btp-insuite
+
+      - name: Check dir ${{ inputs.mode }}
+        run: |
+          if [ ! -d "btp-insuite/${{ inputs.mode }}" ]; then
+            echo "🚫 Directory btp-insuite/${{ inputs.mode }} not found. Creating it..."
+            mkdir -p btp-insuite/${{ inputs.mode }}
+          else
+            echo "✅ Directory btp-insuite/${{ inputs.mode }} found." 
+          fi
+     
+      - name: Request OAuth Token
+        id: get-token
+        uses: ./cicd-btp-insuite/.github/actions/get-token
+        with:
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+      - name: Download Pid
+        if: ${{ inputs.mode == 'PartnerDirectory' }}
+        uses: ./cicd-btp-insuite/.github/actions/download-pid
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          partner-id: ${{ matrix.id }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+
+      - name: Download Package
+        if: ${{ inputs.mode == 'IntegrationPackages' }}
+        uses: ./cicd-btp-insuite/.github/actions/download-package
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          package-id: ${{ matrix.id }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+ 
+      - name: GIT Commit
+        id: git-commit
+        uses: ./cicd-btp-insuite/.github/actions/git-commit
+        with:
+          comment: ${{ inputs.commit-message }}

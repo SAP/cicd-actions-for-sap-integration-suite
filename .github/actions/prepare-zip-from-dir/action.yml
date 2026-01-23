@@ -1,0 +1,113 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Prepare ZIP Package from GIT
+description: Prepare ZIP Package from GIT
+
+inputs:
+  package-id:
+    description: "Package ID"
+    required: true
+    type: string
+
+  attach-zip:
+    description: "Attach Package(s) ZIP to Run? (true/false)"
+    required: false
+    default: "false"
+    type: string
+
+outputs:
+  location:
+    description: 'File Path to Package'
+    value: ${{ steps.prepare-zip.outputs.location }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: prepare-zip
+      working-directory: btp-insuite/IntegrationPackages
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        
+      run: |
+        echo "Looking for top-level directories ending in ~$PACKAGEID in root..."
+
+        # Find all top-level directories matching *~$PACKAGEID
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *~$PACKAGEID ]]; then
+            matches+=("$dir")
+          fi
+        done
+
+        # Validate number of matches
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Error: Multiple directories found matching *~$PACKAGEID:"
+          for match in "${matches[@]}"; do
+            echo " - $match"
+          done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "❌ No directory found matching *~$PACKAGEID. Package not found in Repo."
+          exit 1
+        fi
+
+        # Proceed with processing the single matching directory
+        dir="${matches[0]}"
+        dir_name=$(basename "$dir")
+        echo "✅ Found only one matching directory: $dir_name"
+        echo "package_dir_name=$dir_name" >> "$GITHUB_OUTPUT"
+        TARGET_DIR=${{ runner.temp }}/$dir_name
+        echo "Create temp directory $TARGET_DIR"
+        mkdir -p $TARGET_DIR
+
+        # Show hidden file (in case there are any
+        shopt -s dotglob
+
+        # Copy files and zip directories to "$TARGET_DIR"
+        for item in "$dir_name"/*; do
+          name=$(basename "$item")
+          if [ -d "$item" ]; then
+            if [ "$name" == "Configuration" ]; then
+              echo "⏭️ Skipping Configuration directory"
+              continue
+            fi
+            echo "📦 Found Directory $name"    
+            (
+              cd "$item" || exit 1
+              # Create a temp zip file with .zip extension first
+              tmp_zip="$TARGET_DIR/${name}.zip"
+              echo "Zipping contents of directory '$item' into temp file '$tmp_zip'"
+              zip -r "$tmp_zip" .
+              # Rename by removing the .zip extension
+              mv "$tmp_zip" "$TARGET_DIR/$name"
+              echo "Renamed $tmp_zip to $TARGET_DIR/$name (no .zip extension)"
+            )
+          elif [ -f "$item" ]; then
+            echo "📋 Copy File $name"
+            cp "$item" "$TARGET_DIR/"
+          fi
+        done
+
+        if [[ "${{ inputs.attach-zip }}" == "true" ]]; then
+          echo "📦 attach-zip=true → skipping final ZIP creation"
+          echo "location=$TARGET_DIR" >> "$GITHUB_OUTPUT"
+        else
+          echo "📦 attach-zip=false → creating final ZIP"
+          cd "$TARGET_DIR"
+          FINAL_ZIP="${{ runner.temp }}/$dir_name.zip"
+          zip "$FINAL_ZIP" ./*
+          echo "location=$FINAL_ZIP" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload ZIP artifact
+      if: ${{ inputs.attach-zip == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.prepare-zip.outputs.package_dir_name }}
+        path: ${{ steps.prepare-zip.outputs.location }}        

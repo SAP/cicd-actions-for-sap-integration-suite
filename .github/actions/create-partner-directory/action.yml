@@ -1,0 +1,41 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Create Partner Directory'
+description: 'Creates a partner directory and copies provided files as JSON.'
+inputs:
+  partner-id:
+    description: 'Partner ID for directory creation.'
+    required: true
+  StringParameters:
+    description: 'Path to StringParameters file.'
+    required: true
+  AlternativePartners:
+    description: 'Path to AlternativePartners file.'
+    required: true
+  AuthorizedUsers:
+    description: 'Path to AuthorizedUsers file.'
+    required: true
+  BinaryParameters:
+    description: 'Path to BinaryParameters file.'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Create Partner Directory and Copy Files
+      working-directory: btp-insuite
+      shell: bash
+      run: |
+        set -e
+        # Delete existing PartnerDirectory/<partner-id> if it exists
+        if [ -d "PartnerDirectory/${{ inputs.partner-id }}" ]; then
+          rm -rf "PartnerDirectory/${{ inputs.partner-id }}"
+        fi
+        mkdir -p PartnerDirectory/${{ inputs.partner-id }}
+        cp "${{ inputs.StringParameters }}" PartnerDirectory/${{ inputs.partner-id }}/StringParameters.json
+        cp "${{ inputs.AlternativePartners }}" PartnerDirectory/${{ inputs.partner-id }}/AlternativePartners.json
+        cp "${{ inputs.AuthorizedUsers }}" PartnerDirectory/${{ inputs.partner-id }}/AuthorizedUsers.json
+        cp "${{ inputs.BinaryParameters }}" PartnerDirectory/${{ inputs.partner-id }}/BinaryParameters.json

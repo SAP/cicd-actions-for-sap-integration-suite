@@ -1,0 +1,241 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Create Partner ID Entry
+description: Create Partner Directory Entry in BTP
+
+inputs:
+  bearer-token:
+    description: "OAuth Bearer Token for API authentication"
+    required: true
+  parameter-json:
+    description: "Path to JSON file or JSON content for creation"
+    required: true
+  type:
+    description: "Type of Partner Directory entity (AlternativePartners, AuthorizedUsers, StringParameters, BinaryParameters)"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    
+    - id: create-pid-entries
+      name: Create Partner Directory Entries for ${{ inputs.type }}
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        TYPE: ${{ inputs.type }}
+        PARAMETER_JSON: ${{ inputs.parameter-json }}
+      run: |
+        set -euo pipefail
+        
+        echo "========================================="
+        echo "🚀 Creating Partner Directory: $TYPE"
+        echo "========================================="
+        
+        # Function to validate JSON structure based on type
+        validate_json_structure() {
+          local json_entry="$1"
+          local type="$2"
+          
+          case "$type" in
+            "AlternativePartners")
+              if ! echo "$json_entry" | jq -e '.Agency and .Scheme and .Id and .Pid' >/dev/null 2>&1; then
+                echo "❌ Invalid JSON structure for AlternativePartners. Required: Agency, Scheme, Id, Pid"
+                return 1
+              fi
+              ;;
+            "AuthorizedUsers")
+              if ! echo "$json_entry" | jq -e '.User and .Pid' >/dev/null 2>&1; then
+                echo "❌ Invalid JSON structure for AuthorizedUsers. Required: User, Pid"
+                return 1
+              fi
+              ;;
+            "StringParameters")
+              if ! echo "$json_entry" | jq -e '.Pid and .Id and .Value != null' >/dev/null 2>&1; then
+                echo "❌ Invalid JSON structure for StringParameters. Required: Pid, Id, Value"
+                return 1
+              fi
+              ;;
+            "BinaryParameters")
+              if ! echo "$json_entry" | jq -e '.Pid and .Id and .ContentType and .Value' >/dev/null 2>&1; then
+                echo "❌ Invalid JSON structure for BinaryParameters. Required: Pid, Id, ContentType, Value"
+                return 1
+              fi
+              ;;
+            *)
+              echo "❌ Unknown type: $type"
+              return 1
+              ;;
+          esac
+          return 0
+        }
+        
+        # Read JSON content
+        if [[ -f "$PARAMETER_JSON" ]]; then
+          echo "📄 Reading JSON from file: $PARAMETER_JSON"
+          JSON_CONTENT=$(cat "$PARAMETER_JSON")
+        else
+          echo "📝 Using provided JSON content directly"
+          JSON_CONTENT="$PARAMETER_JSON"
+        fi
+        
+        # Validate JSON syntax
+        if ! echo "$JSON_CONTENT" | jq -e . >/dev/null 2>&1; then
+          echo "❌ Invalid JSON syntax provided"
+          exit 1
+        fi
+        
+        # Check if JSON is an array or single object
+        if echo "$JSON_CONTENT" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          ENTRY_COUNT=$(echo "$JSON_CONTENT" | jq '. | length')
+        else
+          ENTRY_COUNT=1
+          JSON_CONTENT="[$JSON_CONTENT]"
+        fi
+        
+        echo "📊 Processing $ENTRY_COUNT entries for $TYPE"
+        echo "-----------------------------------------"
+        
+        # Setup API endpoint
+        API_ENDPOINT="$BTP_API_URL/api/v1/$TYPE"
+        
+        # Initialize counters
+        SUCCESS_COUNT=0
+        FAILURE_COUNT=0
+        SKIPPED_COUNT=0
+        
+        # Process each entry
+        i=0
+        while [ $i -lt $ENTRY_COUNT ]; do
+          echo ""
+          entry_num=$((i + 1))
+          echo "[$entry_num/$ENTRY_COUNT] Processing entry..."
+          
+          # Extract current entry
+          CURRENT_ENTRY=$(echo "$JSON_CONTENT" | jq -c ".[$i]")
+          
+          # Skip empty entries
+          if [[ "$CURRENT_ENTRY" == "null" ]] || [[ -z "$CURRENT_ENTRY" ]]; then
+            echo "⚠️ Skipping empty entry at index $i"
+            SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+            i=$((i + 1))
+            continue
+          fi
+          
+          # Validate JSON structure for current type
+          if ! validate_json_structure "$CURRENT_ENTRY" "$TYPE"; then
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+            i=$((i + 1))
+            continue
+          fi
+          
+          # Extract identifier for logging
+          case "$TYPE" in
+            "AlternativePartners")
+              IDENTIFIER="Pid=$(echo "$CURRENT_ENTRY" | jq -r '.Pid'), Id=$(echo "$CURRENT_ENTRY" | jq -r '.Id')"
+              ;;
+            "AuthorizedUsers")
+              IDENTIFIER="Pid=$(echo "$CURRENT_ENTRY" | jq -r '.Pid'), User=$(echo "$CURRENT_ENTRY" | jq -r '.User')"
+              ;;
+            "StringParameters"|"BinaryParameters")
+              IDENTIFIER="Pid=$(echo "$CURRENT_ENTRY" | jq -r '.Pid'), Id=$(echo "$CURRENT_ENTRY" | jq -r '.Id')"
+              ;;
+          esac
+          
+          echo "   📌 $IDENTIFIER"
+          
+          # Execute API call
+          RESPONSE=$(mktemp)
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -X POST "$API_ENDPOINT" \
+            -H "Authorization: $BEARER_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "$CURRENT_ENTRY" \
+            -o "$RESPONSE") || {
+            echo "   ❌ Network error occurred"
+            rm -f "$RESPONSE"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+            i=$((i + 1))
+            continue
+          }
+          
+          RESPONSE_BODY=$(cat "$RESPONSE" 2>/dev/null || echo "")
+          rm -f "$RESPONSE"
+          
+          # Check HTTP status
+          if [[ "$HTTP_STATUS" == "201" ]]; then
+            echo "   ✅ Successfully created (HTTP $HTTP_STATUS)"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          elif [[ "$HTTP_STATUS" == "200" ]]; then
+            echo "   ✅ Successfully updated (HTTP $HTTP_STATUS)"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          elif [[ "$HTTP_STATUS" == "409" ]]; then
+            echo "   ⚠️ Entry already exists (HTTP $HTTP_STATUS)"
+            if [[ -n "$RESPONSE_BODY" ]]; then
+              echo "   Response: $(echo "$RESPONSE_BODY" | jq -c '.' 2>/dev/null || echo "$RESPONSE_BODY")"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+          elif [[ "$HTTP_STATUS" == "401" ]]; then
+            echo "   ❌ Authentication failed (HTTP $HTTP_STATUS)"
+            if [[ -n "$RESPONSE_BODY" ]]; then
+              echo "   Response: $(echo "$RESPONSE_BODY" | jq -c '.' 2>/dev/null || echo "$RESPONSE_BODY")"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+            break
+          elif [[ "$HTTP_STATUS" == "400" ]]; then
+            echo "   ❌ Bad request (HTTP $HTTP_STATUS)"
+            if [[ -n "$RESPONSE_BODY" ]]; then
+              echo "   Response: $(echo "$RESPONSE_BODY" | jq -c '.' 2>/dev/null || echo "$RESPONSE_BODY")"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+          elif [[ "$HTTP_STATUS" == "403" ]]; then
+            echo "   ❌ Forbidden (HTTP $HTTP_STATUS)"
+            if [[ -n "$RESPONSE_BODY" ]]; then
+              echo "   Response: $(echo "$RESPONSE_BODY" | jq -c '.' 2>/dev/null || echo "$RESPONSE_BODY")"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+          else
+            echo "   ❌ Failed with HTTP status: $HTTP_STATUS"
+            if [[ -n "$RESPONSE_BODY" ]]; then
+              echo "   Response: $(echo "$RESPONSE_BODY" | jq -c '.' 2>/dev/null || echo "$RESPONSE_BODY")"
+            fi
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+          fi
+          
+          i=$((i + 1))
+        done
+        
+        # Final summary
+        echo ""
+        echo "========================================="
+        echo "📊 Summary for $TYPE"
+        echo "========================================="
+        echo "✅ Successful: $SUCCESS_COUNT"
+        echo "❌ Failed: $FAILURE_COUNT"
+        echo "⚠️ Skipped: $SKIPPED_COUNT"
+        echo "📝 Total processed: $ENTRY_COUNT"
+        echo "========================================="
+        
+        # Set outputs for workflow
+        echo "success_count=$SUCCESS_COUNT" >> $GITHUB_OUTPUT
+        echo "failure_count=$FAILURE_COUNT" >> $GITHUB_OUTPUT
+        echo "skipped_count=$SKIPPED_COUNT" >> $GITHUB_OUTPUT
+        echo "total_count=$ENTRY_COUNT" >> $GITHUB_OUTPUT
+        
+        # Exit with error if all entries failed
+        if [ $SUCCESS_COUNT -eq 0 ] && [ $ENTRY_COUNT -gt 0 ] && [ $SKIPPED_COUNT -ne $ENTRY_COUNT ]; then
+          echo "❌ No entries were successfully created/updated"
+          exit 1
+        fi
+        
+
+        echo "✅ Partner Directory update completed for $TYPE"

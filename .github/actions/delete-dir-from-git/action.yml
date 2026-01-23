@@ -1,0 +1,64 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Delete Directory from GIT
+description: Delete Directory from GIT
+inputs:
+  id:
+    description: "ID"
+    required: true
+    type: string
+  mode:
+    description: "Mode IntegrationPackages/PartnerDirectory"
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: delete-dir
+      working-directory: btp-insuite/${{ inputs.mode }}
+      shell: bash
+      env:
+        ID: ${{ inputs.id }}
+        
+      run: |
+        echo "Looking for top-level directories ending in $ID in root..."
+        # Find all top-level directories matching *$ID
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *$ID ]]; then
+            matches+=("$dir")
+          fi
+        done
+        # Validate number of matches
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Error: Multiple directories found matching *$ID:"
+          for match in "${matches[@]}"; do
+            echo " - $match"
+          done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "⚠️ No directory found matching *$ID. $ID not found in Repo."
+          exit 0
+        fi
+        # Proceed with processing the single matching directory
+        dir="${matches[0]}"
+        dir_name=$(basename "$dir")
+        echo "✅ Found only one matching directory: $dir_name"
+        
+        # Delete the directory
+        echo "Deleting directory: $dir"
+        rm -rf "$dir"
+        
+        if [[ $? -eq 0 ]]; then
+          echo "✅ Successfully deleted $dir_name"
+        else
+          echo "❌ Failed to delete $dir_name"
+          exit 1
+        fi

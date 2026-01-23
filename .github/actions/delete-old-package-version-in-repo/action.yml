@@ -1,0 +1,91 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Prepare Repo
+description: Delete old version of Package in Repo
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  package-name:
+    description: "Package Name"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - id: prepare-repo
+      shell: bash
+      working-directory: btp-insuite/IntegrationPackages
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        
+      run: |
+        echo "Looking for top-level directories ending in ~$PACKAGEID in root..."
+
+        # Find all top-level directories matching *~$PACKAGEID
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *~$PACKAGEID ]]; then
+            matches+=("$dir")
+          fi
+        done
+
+        # Validate number of matches
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Error: Multiple directories found matching *~$PACKAGEID:"
+          for match in "${matches[@]}"; do
+            echo " - $match"
+          done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "ℹ️ No directory found matching *~$PACKAGEID. Nothing to do."
+          exit 0
+        fi
+
+        # Proceed with processing the single matching directory
+        dir="${matches[0]}"
+        dir_name=$(basename "$dir")
+        echo "✅ Found only one matching directory: $dir_name"
+
+        # Delete all subdirectories except 'Configuration'
+        for sub in "$dir"*/; do
+          sub_dir=$(basename "$sub")
+          if [[ "$sub_dir" != "Configuration" ]]; then
+            echo "Deleting subdirectory: $sub_dir"
+            rm -rf "$dir/$sub_dir"
+          else
+            echo "Keeping subdirectory: $sub_dir"
+          fi
+        done
+
+        # Delete all files directly inside the directory
+        for file in "$dir"*; do
+          if [[ -f "$file" ]]; then
+            echo "Deleting file: $(basename "$file")"
+            rm -f "$file"
+          fi
+        done
+
+        # Rename the directory only if needed
+        new_dir_name="${PACKAGENAME}~${PACKAGEID}"
+        if [[ "$dir_name" != "$new_dir_name" ]]; then
+          echo "Renaming $dir_name to $new_dir_name"
+          mv "$dir" "./$new_dir_name"
+        else
+          echo "Directory already named correctly: $dir_name"
+        fi

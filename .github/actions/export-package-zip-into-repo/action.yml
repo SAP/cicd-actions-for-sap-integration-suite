@@ -1,0 +1,76 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Unzip Package into REPO
+description: Unzip Package into REPO (Assumption destination folder exists and is empty)
+
+inputs:
+  location-zip:
+    description: "Location of ZIP File (full path incl. Filename)"
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: unzip-package-into-repo
+      working-directory: btp-insuite/IntegrationPackages
+      shell: bash
+      env:
+        LOCATIONZIP: ${{ inputs.location-zip }}
+        
+      run: |
+
+        # Check if LOCATIONZIP is set and not empty
+        if [ -z "$LOCATIONZIP" ]; then
+          echo "Error: LOCATIONZIP is not set or is empty."
+          exit 1
+        fi
+             
+        # Input ZIP file
+        MAIN_ZIP="$LOCATIONZIP"
+        echo "Working on $MAIN_ZIP"
+
+        # Strip .zip and extract
+        BASE_NAME=$(basename "$MAIN_ZIP" .zip)
+        TARGET_DIR="${GITHUB_WORKSPACE}/btp-insuite/IntegrationPackages/${BASE_NAME}"
+
+        echo "Extracting $MAIN_ZIP to $TARGET_DIR"
+        mkdir -p "$TARGET_DIR"
+
+        # Extract the main ZIP
+        unzip -o "$MAIN_ZIP" -d "$TARGET_DIR"
+
+        echo "Scanning files in $TARGET_DIR for potential ZIPs..."
+
+        # Loop over all non-directory files in the target dir (not recursive)
+        find "$TARGET_DIR" -maxdepth 1 -type f | while read -r file; do
+          echo "Checking file: $file"
+
+          # Define temporary extraction directory
+          extract_dir="${file}_extracted"
+
+          # Create the temporary directory
+          mkdir -p "$extract_dir"
+
+          # Try extracting into the temporary directory
+          if unzip -o "$file" -d "$extract_dir" > /dev/null 2>&1; then
+            echo "✅ Extracted successfully: $extract_dir"
+
+            # Delete original ZIP file
+            rm -f "$file"
+            echo "🗑️  Deleted original ZIP file: $file"
+
+            # Rename extracted folder to original file name
+            mv "$extract_dir" "$file"
+            echo "📁 Renamed extracted folder to: $file"
+          else
+            echo "❌ Not a valid ZIP (or extraction failed): $file"
+
+            # Cleanup failed extraction directory
+            rmdir "$extract_dir" 2>/dev/null
+          fi
+        done

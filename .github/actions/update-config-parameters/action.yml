@@ -1,0 +1,267 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: 'Update iFlow Configuration Parameters'
+description: 'Updates integration flow configuration parameters via BTP API using package ID to locate JSON configuration file'
+inputs:
+  package-id:
+    description: "Package ID"
+    required: true
+    type: string
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+    type: string
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+    type: string
+  target-env:
+    description: "Environment"
+    required: true
+    type: string
+  iflow-id:
+    description: 'Optional: Specific iFlow ID to update. If provided, only this iFlow will be updated instead of all iFlows in the package'
+    required: false
+    type: string
+    
+runs:
+  using: 'composite'
+  steps:
+    - name: Install jq
+      shell: bash
+      run: |
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+
+    - name: Find and update configuration parameters
+      working-directory: btp-insuite/IntegrationPackages
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        STAGE: ${{ inputs.target-env }}
+        IFLOW_ID: ${{ inputs.iflow-id }}
+      run: |
+        set +e  # Do not exit on errors
+
+        # Function to HTML encode only raw special characters, preserving existing entities
+        html_encode_preserve_entities() {
+          perl -pe '
+            s/&(?!(?:#[0-9]+|[a-zA-Z0-9]+);)/&amp;/g;
+            s/</&lt;/g;
+            s/>/&gt;/g;
+            s/"/&quot;/g;
+            s/'"'"'/&apos;/g;
+          '
+        }
+
+        echo "Looking for top-level directories ending in ~$PACKAGEID in root..."
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *~$PACKAGEID ]]; then
+            matches+=("$dir")
+          fi
+        done
+
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Error: Multiple directories found matching *~$PACKAGEID:"
+          for match in "${matches[@]}"; do
+            echo " - $match"
+          done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "❌ No directory found matching *~$PACKAGEID. Package not found in Repo."
+          exit 1
+        fi
+
+        dir="${matches[0]}"
+        dir_name=$(basename "$dir")
+        CONFIG_FILE="$dir/Configuration/ConfigParams_INTEGRATION_FLOW.json"
+        CONFIG_FILE="${CONFIG_FILE//\/\//\/}"  # Remove double slashes
+
+        echo "✅ Found package directory: $dir_name"
+        echo "Looking for configuration file: $CONFIG_FILE"
+
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+          echo "❌ Configuration file not found: $CONFIG_FILE"
+          exit 1
+        fi
+
+        echo "✅ Found configuration file: $CONFIG_FILE"
+        echo "Package ID: $PACKAGEID"
+        echo "BTP API URL: $BTP_API_URL"
+        echo "Target Stage: $STAGE"
+
+        if [[ -n "$IFLOW_ID" ]]; then
+          echo "Specific iFlow ID: $IFLOW_ID (will update only this iFlow)"
+        else
+          echo "No specific iFlow ID provided (will update all iFlows in package)"
+        fi
+
+        totalUpdated=0
+        totalFailed=0
+        totalEmptyValues=0
+
+        # Get artifacts safely
+        artifacts_count=$(jq '.PackageIntegrationFlowParameters.Artifacts | length // 0' "$CONFIG_FILE")
+        if [[ "$artifacts_count" -eq 0 ]]; then
+          echo "⚠️ No artifacts found in JSON file"
+          exit 0
+        fi
+
+        # If specific iFlow ID is provided, find and process only that artifact
+        if [[ -n "$IFLOW_ID" ]]; then
+          echo -e "\n=== Searching for specific iFlow: $IFLOW_ID ==="
+          found_iflow=false
+          
+          for i in $(seq 0 $((artifacts_count - 1))); do
+            artifactID=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].ArtifactID // empty" "$CONFIG_FILE")
+            
+            if [[ "$artifactID" == "$IFLOW_ID" ]]; then
+              found_iflow=true
+              artifactName=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].ArtifactName // empty" "$CONFIG_FILE")
+              echo "✅ Found target iFlow: $artifactName (ID: $artifactID)"
+              
+              echo -e "\n=== Processing Artifact: $artifactName ==="
+              echo "Artifact ID: $artifactID"
+
+              params_count=$(jq ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters | length // 0" "$CONFIG_FILE")
+              if [[ "$params_count" -eq 0 ]]; then
+                echo "No parameters found for this artifact"
+                break
+              fi
+
+              for j in $(seq 0 $((params_count - 1))); do
+                key=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterKey // empty" "$CONFIG_FILE")
+                dataType=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].DataType // empty" "$CONFIG_FILE")
+                description=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].Description // empty" "$CONFIG_FILE")
+
+                # Determine value for the stage
+                value=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterValues.\"$STAGE\" // .PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterValues.Default // empty" "$CONFIG_FILE")
+                
+                if [[ -z "$value" || "$value" == "null" ]]; then
+                  echo "⚠️ Warning: No value found for parameter $key at stage $STAGE or Default"
+                  ((totalEmptyValues++))
+                  continue
+                fi
+
+                echo -e "\n--- Updating Parameter: $key ---"
+                echo "Value from JSON: $value"
+                
+                encoded_value=$(printf '%s' "$value" | html_encode_preserve_entities)
+
+                echo "HTML encoded value: $encoded_value"
+
+                encoded_key=$(printf '%s' "$key" | jq -sRr @uri)
+                apiUrl="$BTP_API_URL/api/v1/IntegrationDesigntimeArtifacts(Id='$artifactID',Version='active')/\$links/Configurations('$encoded_key')"
+                payload=$(jq -n --arg v "$encoded_value" --arg dt "$dataType" --arg desc "$description" '{ParameterValue: $v, DataType: $dt, Description: $desc}')
+                # HTML encode the payload, preserving existing entities
+
+                http_status=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$apiUrl" \
+                  -H "Authorization: $BEARER_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -H "Accept: application/json" \
+                  -d "$payload")
+
+                if [[ "$http_status" =~ ^2 ]]; then
+                  echo "✅ Successfully updated $key"
+                  ((totalUpdated++))
+                else
+                  echo "❌ Failed to update $key (HTTP status: $http_status)"
+                  ((totalFailed++))
+                fi
+
+                sleep 1
+              done
+              break
+            fi
+          done
+
+          if [[ "$found_iflow" == false ]]; then
+            echo "❌ Error: iFlow with ID '$IFLOW_ID' not found in the configuration file"
+            exit 1
+          fi
+
+        else
+          # Process all artifacts (original behavior)
+          echo -e "\n=== Processing all iFlows in package ==="
+          
+          for i in $(seq 0 $((artifacts_count - 1))); do
+            artifactName=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].ArtifactName // empty" "$CONFIG_FILE")
+            artifactID=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].ArtifactID // empty" "$CONFIG_FILE")
+            echo -e "\n=== Processing Artifact: $artifactName ==="
+            echo "Artifact ID: $artifactID"
+
+            params_count=$(jq ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters | length // 0" "$CONFIG_FILE")
+            if [[ "$params_count" -eq 0 ]]; then
+              echo "No parameters found for this artifact"
+              continue
+            fi
+
+            for j in $(seq 0 $((params_count - 1))); do
+              key=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterKey // empty" "$CONFIG_FILE")
+              dataType=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].DataType // empty" "$CONFIG_FILE")
+              description=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].Description // empty" "$CONFIG_FILE")
+
+              # Determine value for the stage
+              value=$(jq -r ".PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterValues.\"$STAGE\" // .PackageIntegrationFlowParameters.Artifacts[$i].Parameters[$j].ParameterValues.Default // empty" "$CONFIG_FILE")
+              
+              if [[ -z "$value" || "$value" == "null" ]]; then
+                echo "⚠️ Warning: No value found for parameter $key at stage $STAGE or Default"
+                ((totalEmptyValues++))
+                continue
+              fi
+
+              echo -e "\n--- Updating Parameter: $key ---"
+              echo "Value from JSON: $value"
+                
+              encoded_value=$(printf '%s' "$value" | html_encode_preserve_entities)
+
+              echo "HTML encoded value: $encoded_value"
+
+              encoded_key=$(printf '%s' "$key" | jq -sRr @uri)
+              apiUrl="$BTP_API_URL/api/v1/IntegrationDesigntimeArtifacts(Id='$artifactID',Version='active')/\$links/Configurations('$encoded_key')"
+              #apiUrl="$BTP_API_URL/api/v1/IntegrationDesigntimeArtifacts(Id='$artifactID',Version='active')/\$links/Configurations('$key')"
+              payload=$(jq -n --arg v "$encoded_value" --arg dt "$dataType" --arg desc "$description" '{ParameterValue: $v, DataType: $dt, Description: $desc}')
+
+              http_status=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$apiUrl" \
+                -H "Authorization: $BEARER_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -d "$payload")
+
+              if [[ "$http_status" =~ ^2 ]]; then
+                echo "✅ Successfully updated $key"
+                ((totalUpdated++))
+              else
+                echo "❌ Failed to update $key (HTTP status: $http_status)"
+                ((totalFailed++))
+              fi
+
+              sleep 1
+            done
+          done
+        fi
+
+        echo -e "\n=== Summary ==="
+        if [[ -n "$IFLOW_ID" ]]; then
+          echo "Target iFlow: $IFLOW_ID"
+        else
+          echo "Processed all iFlows in package"
+        fi
+        echo "Total parameters processed: $((totalUpdated + totalFailed + totalEmptyValues))"
+        echo "Successfully updated: $totalUpdated"
+        echo "Failed to update (API errors): $totalFailed"
+        echo "Skipped (empty/missing values): $totalEmptyValues"
+
+        # Exit 0 even if some updates failed
+        exit 0

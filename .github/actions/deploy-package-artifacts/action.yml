@@ -1,0 +1,163 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Deploy/Undeploy Package Artifacts
+
+description: Deploy/Undeploy all artifacts in a package from a JSON file
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+    type: string
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+    type: string
+  file:
+    description: "Path to JSON file containing deploytasks"
+    required: true
+    type: string
+  action:
+    required: true
+    description: "Deployment Action Deploy/Undeploy"
+    options:
+      - Deploy
+      - Undeploy
+
+runs:
+  using: "composite"
+  steps:
+    - id: deploy-package-artifacts
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        FILE: ${{ inputs.file }}
+        ACTION: ${{ inputs.action }}
+      run: |
+        if [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" != "deploy" ] && \
+          [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" != "undeploy" ]; then
+          echo "❌ Wrong action passed ($ACTION)"
+          exit 1
+        fi
+
+        if ! command -v jq &> /dev/null; then
+          echo "jq could not be found, installing..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+
+        if [ ! -f "$FILE" ]; then
+          echo "❌ File $FILE not found."
+          exit 1
+        fi
+
+        if ! jq empty "$FILE"; then
+          echo "❌ Invalid JSON in $FILE"
+          cat "$FILE"
+          exit 1
+        fi
+
+        ids=$(jq -c '.d.deploytasks // []' "$FILE")
+        count=$(echo "$ids" | jq 'length')
+        echo "Found $count deploytasks in $FILE."
+
+        if [ "$count" -eq 0 ]; then
+          echo "No deploytasks to process."
+          exit 0
+        fi
+
+        echo "$ids" | jq -c '.[]' | while read -r row; do
+          id=$(echo "$row" | jq -r '.id')
+          type=$(echo "$row" | jq -r '.type')
+          echo "Processing $id of type $type with action $ACTION..."
+
+          if [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" = "undeploy" ]; then
+            echo "♻️ Performing undeployment for $id of type $type using API $BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$id')"
+            curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$id')" \
+            -H "Authorization: $BEARER_TOKEN")
+
+            HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+            BODY=$(echo "$curl_response" | sed '$d')
+
+            if [ "$HTTP_STATUS" != "202" ] && [ "$HTTP_STATUS" != "404" ]; then
+              echo "Error: HTTP status $HTTP_STATUS received while requesting undeployment"
+              echo "Response body: $BODY"
+              exit 1
+            fi
+            echo "✅ Undeployment successfully triggered for $id"
+          else
+            echo "🚀 Performing deployment for $id of type $type using API $BTP_API_URL/api/v1/Deploy${type}DesigntimeArtifact?Id='$id'&Version='active'"
+            curl_response=$(curl -s -w "\n%{http_code}" -X POST "$BTP_API_URL/api/v1/Deploy${type}DesigntimeArtifact?Id='$id'&Version='active'" \
+            -H "Authorization: $BEARER_TOKEN")
+
+            HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+            BODY=$(echo "$curl_response" | sed '$d')
+
+            if [ "$HTTP_STATUS" != "202" ]; then
+              echo "Error: HTTP status $HTTP_STATUS received while requesting deployment"
+              echo "Response body: $BODY"
+              exit 1
+            fi
+            echo "✅ Deployment successfully triggered for $id"
+          fi
+
+          # Wait for final Deployment / Undeployment
+          MAX_TOTAL=7200  # 2 hours
+          MAX_WAIT=60
+          WAIT=1
+          ELAPSED=0
+          EXIT_REASON="timeout"
+
+          echo "Check status of $id using API $BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$id')?\$select=Status"
+          while [ $ELAPSED -lt $MAX_TOTAL ]; do
+            curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$id')?\$select=Status" \
+            -H "Authorization: $BEARER_TOKEN" \
+            -H "Accept: application/json")
+
+            HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+            BODY=$(echo "$curl_response" | sed '$d')
+
+            if [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" = "undeploy" ]; then
+              if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "404" ]; then
+                echo "Error: HTTP status $HTTP_STATUS received while requesting runtime status"
+                echo "Response body: $BODY"
+                exit 1
+              fi
+              if [ "$HTTP_STATUS" = "404" ]; then
+                echo "✅ $id undeployed."
+                EXIT_REASON="success"
+                break
+              fi
+            else
+              if [ "$HTTP_STATUS" = "200" ]; then
+                echo "$BODY" > body.json
+                STATUS=$(jq -r '.d.Status' body.json)
+                if [ "$STATUS" = "STARTED" ]; then
+                  echo "✅ $id STARTED."
+                  EXIT_REASON="success"
+                  break
+                elif [ "$STATUS" = "ERROR" ]; then
+                  echo "❌ $id ERROR. Continue"
+                  EXIT_REASON="success"
+                  break
+                fi
+              fi
+            fi
+            CURRENT_WAIT=$WAIT
+            if [ $CURRENT_WAIT -gt $MAX_WAIT ]; then
+              CURRENT_WAIT=$MAX_WAIT
+            fi
+            echo "⏳ Waiting for $CURRENT_WAIT second(s)... (Elapsed: $ELAPSED second(s))"
+            sleep $CURRENT_WAIT
+            ELAPSED=$((ELAPSED + CURRENT_WAIT))
+            WAIT=$((WAIT * 2))
+          done
+          if [ "$EXIT_REASON" = "timeout" ]; then
+            echo "❌ Reached maximum wait time of $MAX_TOTAL seconds for $id without success."
+            exit 1
+          fi
+        done

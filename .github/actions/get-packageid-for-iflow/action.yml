@@ -1,0 +1,64 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Get CPI Package ID for IFlow
+description: Get Package ID from CPI Designtime for IFlow
+inputs:
+  bearer-token:
+    required: true
+  btp-api-url:
+    required: true
+  iflow-id:
+    required: true
+outputs:
+  packageID:
+    description: 'ID of Package where IFlow is located'
+    value: ${{ steps.get-package-id-iflow.outputs.packageID }}
+runs:
+  using: "composite"
+  steps:
+    - id: get-package-id-iflow
+      shell: bash
+      
+      run: |
+        echo "::group::Get Package ID for IFlow"
+        echo "Fetching Package ID for IFlow: ${{ inputs.iflow-id }}"
+        echo "API Endpoint: $BTP_API_URL/api/v1/IntegrationDesigntimeArtifacts(Id='$IFLOW_ID',Version='active')"
+        
+        # Make API call to get IFlow details
+        curl_response=$(curl -s -w "\n%{http_code}" -X GET "${{ inputs.btp-api-url }}/api/v1/IntegrationDesigntimeArtifacts(Id='${{ inputs.iflow-id }}',Version='active')" \
+          -H "Authorization: ${{ inputs.bearer-token }}" \
+          -H "Accept: application/json")
+        
+        # Extract HTTP status code and response body
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+        
+        # Check if request was successful
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "Error: HTTP status $HTTP_STATUS received while requesting IFlow metadata."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+        
+        echo "API Response received successfully"
+        
+        # Extract PackageId using jq
+        PACKAGE_ID=$(echo "$BODY" | jq -r '.d.PackageId')
+        
+        # Validate that PackageId was found
+        if [[ -z "$PACKAGE_ID" ]] || [[ "$PACKAGE_ID" == "null" ]]; then
+          echo "Error: PackageId is null or empty for IFlow '${{ inputs.iflow-id }}'"
+          echo "Please verify that the IFlow exists and has a valid PackageId"
+          exit 1
+        fi
+        
+        echo "Successfully extracted PackageId: $PACKAGE_ID"
+        
+        # Output the PackageId
+        echo "packageID=$PACKAGE_ID" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"

@@ -1,0 +1,49 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Decode Binary Parameters'
+description: 'Decodes base64 binary parameters and writes them to files, updating the JSON.'
+runs:
+  using: 'composite'
+  steps:
+    - name: Decode BinaryParameters and update JSON
+      shell: bash
+      run: |
+        set -e
+        PARTNER_ID="${{ inputs.partner-id }}"
+        OUTPUT_DIR="${{ inputs.output-dir }}"
+        JSON_FILE="$OUTPUT_DIR/$PARTNER_ID/BinaryParameters.json"
+        BINARY_DIR="$OUTPUT_DIR/$PARTNER_ID/Binary"
+        mkdir -p "$BINARY_DIR"
+        RESULTS_LEN=$(jq '.d.results | length' "$JSON_FILE")
+        declare -a FILENAMES
+        for ((i=0; i<$RESULTS_LEN; i++)); do
+          ID=$(jq -r ".d.results[$i].Id" "$JSON_FILE")
+          CONTENT_TYPE=$(jq -r ".d.results[$i].ContentType" "$JSON_FILE")
+          VALUE=$(jq -r ".d.results[$i].Value" "$JSON_FILE")
+          EXT=$(echo "$CONTENT_TYPE" | grep -o '^[a-zA-Z0-9]*')
+          [ -z "$EXT" ] && EXT="bin"
+          FILENAME="${PARTNER_ID}_${ID}.${EXT}"
+          FILEPATH="$BINARY_DIR/$FILENAME"
+          FILENAMES[$i]="$FILENAME"
+          if [ -n "$VALUE" ]; then
+            echo "$VALUE" | base64 -d > "$FILEPATH"
+          fi
+        done
+        # Build jq filter to update all Value fields
+        JQ_FILTER=''
+        for ((i=0; i<$RESULTS_LEN; i++)); do
+          JQ_FILTER+=".d.results[$i].Value = \"${FILENAMES[$i]}\" | "
+        done
+        JQ_FILTER+="."
+        jq "$JQ_FILTER" "$JSON_FILE" > "$JSON_FILE.tmp" && mv "$JSON_FILE.tmp" "$JSON_FILE"
+inputs:
+  partner-id:
+    description: 'Partner ID.'
+    required: true
+  output-dir:
+    description: 'Directory to write binary files.'
+    required: true

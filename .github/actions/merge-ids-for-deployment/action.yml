@@ -1,0 +1,105 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Pass JSON with IDs to be merged for deployment
+description: Pass JSON with IDs to be added to DeployTask.${PACKAGEID} local file
+
+inputs:
+  package-id:
+    description: "Package ID"
+    required: true
+    type: string
+  package-name:
+    description: "Package Name"
+    required: true
+    type: string
+  file:
+    description: "Input File from get-object-ids-of-package"
+    required: true
+  mode:
+    description: "Deploy/Undeploy"
+    required: true
+    options:
+          - Deploy
+          - Undeploy
+      
+runs:
+  using: "composite"
+  steps:
+    - id: add-ids-for-deployment
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        FILE: ${{ inputs.file }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        # Check if file was passed
+        if [[ -f "$FILE" ]]; then
+          echo "✅ File with IDs found: $FILE"
+        else
+          echo "❌ File with IDs not found: $FILE"
+          exit 1
+        fi
+
+        # Extract the filename (basename)
+        filename=$(basename "$FILE")
+        first_part=${filename%%.*}
+        # Remove 'DesigntimeArtifacts' from the first part
+        ArtifactType=${first_part//DesigntimeArtifacts/}
+        echo "Detected ArtifactType = $ArtifactType"
+
+        # Set FileName for Output
+        DEPLOY_RESULT="${{ runner.temp }}//DeployTask.${PACKAGEID}"
+       
+        # Extract all IDs from FILE
+        ids=$(jq -r '.d.results[] | .Id' "$FILE")
+
+        # Exit early if no IDs were found
+        if [[ -z "$ids" ]]; then
+          echo "No IDs found for type '$ArtifactType'. Nothing to ${{ inputs.mode }}."
+          exit 0
+        fi
+
+        # Add each ID for deployment
+        for id in $ids; do
+          echo "✅ Add $id to deployment"
+
+          # Get ArtifactName
+          ArtifactName=$(jq -r --arg id "$id" '.d.results[] | select(.Id == $id) | .Name' "$FILE")
+          
+          # Add ID to DEPLOY_RESULT
+          # Check whether file exists. If not create header and remember 
+          if [ ! -f "$DEPLOY_RESULT" ]; then
+            echo "❌ File $DEPLOY_RESULT does not exist. Creating it..."
+              
+            jq -n \
+            --arg id "$id" \
+            --arg name "$ArtifactName" \
+            --arg type "$ArtifactType" \
+            --arg action "${{ inputs.MODE }}" \
+            --arg packageid "$PACKAGEID" \
+            --arg packagename "$PACKAGENAME" \
+            '{d: {deploytasks: [{id: $id, name: $name, type: $type, action: $action}], packageid: $packageid, packagename: $packagename}}' > "$DEPLOY_RESULT"
+
+          else
+            # Add new entry
+            echo "✅ $DEPLOY_RESULT available -> Insert entry"
+
+            jq --arg id "$id" --arg name "$ArtifactName" --arg type "$ArtifactType" \
+            '.d.deploytasks += (
+              if (.d.deploytasks // [] | any(.id == $id and .name == $name and .type == $type and .action == "${{ inputs.MODE }}")) 
+                then [] 
+              else [{"id": $id, "name": $name, "type": $type, "action": "${{ inputs.MODE }}"}] 
+              end
+            )' "$DEPLOY_RESULT" > tmp.json && mv tmp.json "$DEPLOY_RESULT"
+
+
+          fi
+        done
+        
+        cat $DEPLOY_RESULT
+        

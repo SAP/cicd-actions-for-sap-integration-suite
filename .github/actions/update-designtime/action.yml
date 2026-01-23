@@ -1,0 +1,93 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Update Designtime from GIT (Upload / Delete)'
+description: 'Upload or delete a package in BTP Integration Suite Designtime from GIT.'
+
+inputs:
+  target-env:
+    description: "Environment"
+    required: true
+  source-ref:
+    description: "GIT Source Reference"
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  case:
+    description: "Delete or Update Package in BTP IS"
+    required: true
+  btp-api-user:
+    description: "BTP Service Key (ClientID) to access Token Endpoint"
+    required: true
+  btp-tec-user:
+    description: "BTP technical User with Access Policy for Integration Suite"
+    required: true
+  btp-token-url:
+    description: "URL on BTP to request Token"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  BTP_API_PASSWORD:
+    description: "BTP API Password"
+    required: true
+  BTP_TEC_PASSWORD:
+    description: "BTP Technical User Password"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.source-ref }}
+        path: btp-insuite
+ 
+    - name: Request OAuth Token
+      id: get-token
+      uses:  ./cicd-btp-insuite/.github/actions/get-token
+      with:
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        BTP_API_PASSWORD: ${{ inputs.BTP_API_PASSWORD }}
+        BTP_TEC_PASSWORD: ${{ inputs.BTP_TEC_PASSWORD }}
+
+    - name: Prepare ZIP
+      id: prepare-zip
+      if: ${{ inputs.case == 'Upload' }}
+      uses:  ./cicd-btp-insuite/.github/actions/prepare-zip-from-dir
+      with:
+        package-id: ${{ inputs.package-id }}
+
+    - name: Delete Package from CPI Designtime
+      id: delete-package-cpi-designtime
+      uses:  ./cicd-btp-insuite/.github/actions/delete-package-from-designtime
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+
+    - name: Upload Package to CPI
+      id: deploy-package
+      if: ${{ inputs.case == 'Upload' }}
+      uses:  ./cicd-btp-insuite/.github/actions/deploy-package
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        zip-location: ${{ steps.prepare-zip.outputs.location }}
+
+    - name: Update iFlow Externalized Parameters
+      id: configure_parameters_iflow
+      if: ${{ inputs.case == 'Upload' }}
+      uses:  ./cicd-btp-insuite/.github/actions/update-config-parameters
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url:  ${{ inputs.btp-api-url }}
+        package-id: ${{ inputs.package-id }}
+        target-env: ${{ inputs.target-env }}
