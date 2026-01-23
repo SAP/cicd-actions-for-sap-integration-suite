@@ -1,0 +1,440 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Create Partner ID in BTP
+description: Create Partner ID in BTP
+
+inputs:
+  target-env:
+    description: "Environment"
+    required: true
+  source-ref:
+    description: "GIT Source Reference"
+    required: true	
+  partner-id:
+    description: "Partner ID to create"
+    required: true	
+  btp-api-user:
+    description: "BTP Service Key (ClientID) to access Token Endpoint"
+    required: true
+  btp-tec-user:
+    description: "BTP technical User with Access Policy for Integration Suite"
+    required: true
+  btp-token-url:
+    description: "URL on BTP to request Token"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  BTP_API_PASSWORD:
+    description: "BTP API Password"
+    required: true
+  BTP_TEC_PASSWORD:
+    description: "BTP Technical User Password"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.source-ref }}
+        path: btp-insuite
+  
+    - name: Request OAuth Token
+      id: get-token
+      uses: ./cicd-btp-insuite/.github/actions/get-token
+      with:
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        BTP_API_PASSWORD: ${{ inputs.BTP_API_PASSWORD }}
+        BTP_TEC_PASSWORD: ${{ inputs.BTP_TEC_PASSWORD }}  
+  
+    - name: Find and Validate Partner Directory JSONs
+      id: prepare-entry	
+      shell: bash
+      env:
+        PARTNERID: ${{ inputs.partner-id }}
+      run: |
+        set -euo pipefail  # Exit on error, undefined variables, pipe failures
+        
+        echo "🔍 Looking for Partner ID: $PARTNERID"
+        echo "📂 Current directory: $(pwd)"
+        
+        # Change to the checked out directory
+        cd btp-insuite || {
+          echo "❌ Failed to change to btp-insuite directory"
+          exit 1
+        }
+        
+        # Verify Partner Directory exists
+        if [[ ! -d "./PartnerDirectory" ]]; then
+          echo "❌ PartnerDirectory folder not found in repository"
+          exit 1
+        fi
+        
+        # Find matching directory
+        dir="./PartnerDirectory/$PARTNERID"
+        
+        if [[ ! -d "$dir" ]]; then
+          echo "❌ Partner ID directory not found: $dir"
+          echo "Available directories:"
+          ls -la ./PartnerDirectory/ || true
+          exit 1
+        fi
+        
+        echo "✅ Found Partner ID directory: $dir"
+        
+        # Define file paths
+        declare -A json_files=(
+          ["alternative_partners"]="$dir/AlternativePartners.json"
+          ["authorized_users"]="$dir/AuthorizedUsers.json"
+          ["binary_parameters"]="$dir/BinaryParameters.json"
+          ["string_parameters"]="$dir/StringParameters.json"
+        )
+        
+        # Process each JSON file
+        for key in "${!json_files[@]}"; do
+          file="${json_files[$key]}"
+          
+          echo "📄 Processing: $file"
+          
+          if [[ ! -f "$file" ]]; then
+            echo "❌ Required file missing: $file"
+            exit 1
+          fi
+          
+          # Validate JSON syntax
+          if ! jq empty "$file" 2>/dev/null; then
+            echo "❌ Invalid JSON syntax in file: $file"
+            jq . "$file" 2>&1 || true  # Show the error
+            exit 1
+          fi
+          
+          # Validate JSON structure has .d.results path
+          if ! jq -e '.d.results' "$file" >/dev/null 2>&1; then
+            echo "❌ Invalid JSON structure in file: $file"
+            echo "   Expected structure: { \"d\": { \"results\": [...] } }"
+            exit 1
+          fi
+          
+          # Check if results array is empty
+          results_count=$(jq '.d.results | length' "$file")
+          if [[ "$results_count" -eq 0 ]]; then
+            echo "⚠️ Warning: No entries found in: $file"
+          fi
+          
+          echo "✅ Valid JSON found: $file (${results_count} entries)"
+          
+          # Get file size for logging
+          file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "unknown")
+          echo "   Size: $file_size bytes"
+          
+          # Read, minify, and base64 encode
+          json_content=$(jq -c . "$file" | base64 -w 0 2>/dev/null || jq -c . "$file" | base64)
+          
+          # Set output
+          echo "${key}_json=$json_content" >> $GITHUB_OUTPUT
+          echo "${key}_path=$file" >> $GITHUB_OUTPUT
+        done
+        
+        echo "✅ All Partner Directory JSON files validated and processed successfully"
+
+    # Process Alternative Partners
+    - name: Prepare Alternative Partners JSON
+      id: prepare-alternative-partners
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        echo "📝 Preparing Alternative Partners JSON"
+        
+        # Decode and save JSON
+        echo "${{ steps.prepare-entry.outputs.alternative_partners_json }}" | base64 -d > /tmp/alternative-partners-raw.json
+        
+        # Validate JSON structure
+        if ! jq -e . /tmp/alternative-partners-raw.json >/dev/null 2>&1; then
+          echo "❌ Failed to decode Alternative Partners JSON"
+          exit 1
+        fi
+        
+        # Extract .d.results array
+        echo "🔄 Extracting .d.results array"
+        if ! jq -e '.d.results' /tmp/alternative-partners-raw.json >/dev/null 2>&1; then
+          echo "❌ JSON structure missing .d.results path"
+          echo "Expected structure: { \"d\": { \"results\": [...] } }"
+          exit 1
+        fi
+        
+        jq '.d.results' /tmp/alternative-partners-raw.json > /tmp/alternative-partners.json
+        
+        echo "✅ Alternative Partners JSON prepared"
+        echo "   Entries: $(jq '. | length' /tmp/alternative-partners.json)"
+        
+        # Output file path
+        echo "json_file=/tmp/alternative-partners.json" >> $GITHUB_OUTPUT
+  
+    - name: Create Alternative Partners for PID
+      id: create-pid-alternative-partners
+      uses: ./cicd-btp-insuite/.github/actions/create-pid-entry
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        parameter-json: ${{ steps.prepare-alternative-partners.outputs.json_file }}
+        type: AlternativePartners
+
+    # Process String Parameters
+    - name: Prepare String Parameters JSON
+      id: prepare-string-parameters
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        echo "📝 Preparing String Parameters JSON"
+        
+        # Decode and save JSON
+        echo "${{ steps.prepare-entry.outputs.string_parameters_json }}" | base64 -d > /tmp/string-parameters-raw.json
+        
+        # Validate JSON structure
+        if ! jq -e . /tmp/string-parameters-raw.json >/dev/null 2>&1; then
+          echo "❌ Failed to decode String Parameters JSON"
+          exit 1
+        fi
+        
+        # Extract .d.results array
+        echo "🔄 Extracting .d.results array"
+        if ! jq -e '.d.results' /tmp/string-parameters-raw.json >/dev/null 2>&1; then
+          echo "❌ JSON structure missing .d.results path"
+          echo "Expected structure: { \"d\": { \"results\": [...] } }"
+          exit 1
+        fi
+        
+        jq '.d.results' /tmp/string-parameters-raw.json > /tmp/string-parameters.json
+        
+        echo "✅ String Parameters JSON prepared"
+        echo "   Entries: $(jq '. | length' /tmp/string-parameters.json)"
+        
+        # Output file path
+        echo "json_file=/tmp/string-parameters.json" >> $GITHUB_OUTPUT
+
+    - name: Create String Parameters for PID
+      id: create-pid-string-parameters
+      uses: ./cicd-btp-insuite/.github/actions/create-pid-entry
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        parameter-json: ${{ steps.prepare-string-parameters.outputs.json_file }}
+        type: StringParameters
+
+    # Process Authorized Users
+    - name: Prepare Authorized Users JSON
+      id: prepare-authorized-users
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        echo "📝 Preparing Authorized Users JSON"
+        
+        # Decode and save JSON
+        echo "${{ steps.prepare-entry.outputs.authorized_users_json }}" | base64 -d > /tmp/authorized-users-raw.json
+        
+        # Validate JSON structure
+        if ! jq -e . /tmp/authorized-users-raw.json >/dev/null 2>&1; then
+          echo "❌ Failed to decode Authorized Users JSON"
+          exit 1
+        fi
+        
+        # Extract .d.results array
+        echo "🔄 Extracting .d.results array"
+        if ! jq -e '.d.results' /tmp/authorized-users-raw.json >/dev/null 2>&1; then
+          echo "❌ JSON structure missing .d.results path"
+          echo "Expected structure: { \"d\": { \"results\": [...] } }"
+          exit 1
+        fi
+        
+        jq '.d.results' /tmp/authorized-users-raw.json > /tmp/authorized-users.json
+        
+        echo "✅ Authorized Users JSON prepared"
+        echo "   Entries: $(jq '. | length' /tmp/authorized-users.json)"
+        
+        # Output file path
+        echo "json_file=/tmp/authorized-users.json" >> $GITHUB_OUTPUT
+
+    - name: Create Authorized Users for PID
+      id: create-pid-authorized-users
+      uses: ./cicd-btp-insuite/.github/actions/create-pid-entry
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        parameter-json: ${{ steps.prepare-authorized-users.outputs.json_file }}
+        type: AuthorizedUsers
+
+    # Process Binary Parameters
+    - name: Prepare Binary Parameters JSON
+      id: prepare-binary-parameters
+      shell: bash
+      env:
+        PARTNERID: ${{ inputs.partner-id }}
+      run: |
+        set -euo pipefail
+        
+        echo "📝 Preparing Binary Parameters JSON"
+        
+        # Decode and save JSON
+        echo "${{ steps.prepare-entry.outputs.binary_parameters_json }}" | base64 -d > /tmp/binary-parameters-raw.json
+        
+        # Validate JSON structure
+        if ! jq -e . /tmp/binary-parameters-raw.json >/dev/null 2>&1; then
+          echo "❌ Failed to decode Binary Parameters JSON"
+          exit 1
+        fi
+        
+        # Extract .d.results array
+        echo "🔄 Extracting .d.results array"
+        if ! jq -e '.d.results' /tmp/binary-parameters-raw.json >/dev/null 2>&1; then
+          echo "❌ JSON structure missing .d.results path"
+          echo "Expected structure: { \"d\": { \"results\": [...] } }"
+          exit 1
+        fi
+        
+        jq '.d.results' /tmp/binary-parameters-raw.json > /tmp/binary-parameters-temp.json
+        
+        echo "✅ Binary Parameters JSON extracted"
+        echo "   Entries: $(jq '. | length' /tmp/binary-parameters-temp.json)"
+        
+        # Define Binary directory path
+        BINARY_DIR="btp-insuite/PartnerDirectory/$PARTNERID/Binary"
+        
+        # Check if Binary directory exists
+        if [[ ! -d "$BINARY_DIR" ]]; then
+          echo "⚠️ Binary directory not found: $BINARY_DIR"
+          echo "   Proceeding without file encoding"
+          cp /tmp/binary-parameters-temp.json /tmp/binary-parameters.json
+        else
+          echo "📁 Binary directory found: $BINARY_DIR"
+          
+          # Process each entry and encode files
+          ENTRY_COUNT=$(jq '. | length' /tmp/binary-parameters-temp.json)
+          echo "🔄 Processing $ENTRY_COUNT binary parameter entries"
+          
+          # Start with empty array
+          echo "[]" > /tmp/binary-parameters.json
+          
+          for ((i=0; i<$ENTRY_COUNT; i++)); do
+            # Extract current entry
+            ENTRY=$(jq ".[$i]" /tmp/binary-parameters-temp.json)
+            
+            # Get the Value field (filename)
+            FILENAME=$(echo "$ENTRY" | jq -r '.Value')
+            
+            if [[ -z "$FILENAME" ]] || [[ "$FILENAME" == "null" ]]; then
+              echo "   [$((i+1))/$ENTRY_COUNT] ⚠️ No filename in Value field, skipping encoding"
+              # Add entry as-is
+              jq --argjson entry "$ENTRY" '. += [$entry]' /tmp/binary-parameters.json > /tmp/binary-parameters-new.json
+              mv /tmp/binary-parameters-new.json /tmp/binary-parameters.json
+              continue
+            fi
+            
+            FILE_PATH="$BINARY_DIR/$FILENAME"
+            
+            if [[ ! -f "$FILE_PATH" ]]; then
+              echo "   [$((i+1))/$ENTRY_COUNT] ❌ File not found: $FILE_PATH"
+              exit 1
+            fi
+            
+            # Get file info
+            FILE_SIZE=$(stat -f%z "$FILE_PATH" 2>/dev/null || stat -c%s "$FILE_PATH" 2>/dev/null || echo "0")
+            echo "   [$((i+1))/$ENTRY_COUNT] 📄 Encoding file: $FILENAME (${FILE_SIZE} bytes)"
+            
+            # Base64 encode the file
+            if command -v base64 >/dev/null 2>&1; then
+              FILE_BASE64=$(base64 -w 0 "$FILE_PATH" 2>/dev/null || base64 "$FILE_PATH" | tr -d '\n')
+            else
+              echo "   ❌ base64 command not found"
+              exit 1
+            fi
+            
+            ENCODED_SIZE=${#FILE_BASE64}
+            echo "      ✅ Encoded size: $ENCODED_SIZE characters"
+            
+            if [[ $ENCODED_SIZE -gt 260000 ]]; then
+              echo "      ⚠️ Warning: Encoded content is larger than 260KB"
+            fi
+            
+            # Update the Value field with base64 encoded content
+            UPDATED_ENTRY=$(echo "$ENTRY" | jq --arg base64 "$FILE_BASE64" '.Value = $base64')
+            
+            # Add to result array
+            jq --argjson entry "$UPDATED_ENTRY" '. += [$entry]' /tmp/binary-parameters.json > /tmp/binary-parameters-new.json
+            mv /tmp/binary-parameters-new.json /tmp/binary-parameters.json
+          done
+          
+          echo "✅ All binary files encoded successfully"
+        fi
+        
+        # Check total size
+        TOTAL_SIZE=$(stat -f%z /tmp/binary-parameters.json 2>/dev/null || stat -c%s /tmp/binary-parameters.json 2>/dev/null || echo 0)
+        if [[ $TOTAL_SIZE -gt 262144 ]]; then
+          echo "⚠️ Warning: Total Binary Parameters JSON is larger than 256KB (${TOTAL_SIZE} bytes)"
+          echo "   Consider compressing large files as ZIP before encoding"
+        fi
+        
+        echo "📊 Final entries: $(jq '. | length' /tmp/binary-parameters.json)"
+        
+        # Output file path
+        echo "json_file=/tmp/binary-parameters.json" >> $GITHUB_OUTPUT
+
+    - name: Create Binary Parameters for PID
+      id: create-pid-binary-parameters
+      uses: ./cicd-btp-insuite/.github/actions/create-pid-entry
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        parameter-json: ${{ steps.prepare-binary-parameters.outputs.json_file }}
+        type: BinaryParameters
+
+    # Summary
+    - name: Partner Directory Creation Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "========================================"
+        echo "📊 Partner Directory Creation Summary"
+        echo "========================================"
+        echo "Partner ID: ${{ inputs.partner-id }}"
+        echo "Environment: ${{ inputs.target-env }}"
+        echo "----------------------------------------"
+        
+        if [[ "${{ steps.create-pid-alternative-partners.outcome }}" == "success" ]]; then
+          echo "✅ Alternative Partners: Created"
+        else
+          echo "❌ Alternative Partners: Failed"
+        fi
+        
+        if [[ "${{ steps.create-pid-string-parameters.outcome }}" == "success" ]]; then
+          echo "✅ String Parameters: Created"
+        else
+          echo "❌ String Parameters: Failed"
+        fi
+        
+        if [[ "${{ steps.create-pid-authorized-users.outcome }}" == "success" ]]; then
+          echo "✅ Authorized Users: Created"
+        else
+          echo "❌ Authorized Users: Failed"
+        fi
+        
+        if [[ "${{ steps.create-pid-binary-parameters.outcome }}" == "success" ]]; then
+          echo "✅ Binary Parameters: Created"
+        else
+          echo "❌ Binary Parameters: Failed"
+        fi
+        
+
+        echo "========================================"

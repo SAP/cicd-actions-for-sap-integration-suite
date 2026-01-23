@@ -1,0 +1,25 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Clean JSON Nodes'
+description: 'Cleans a JSON file, keeping only specified nodes.'
+inputs:
+  filename:
+    description: 'Path to the JSON file to clean.'
+    required: true
+  keep_nodes:
+    description: 'Comma-separated list of JSON node paths to keep (e.g., d.results.Id,d.results.Value)'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Clean JSON file
+      shell: bash
+      run: |
+        # Extract property names from keep_nodes (e.g., d.results.Id,d.results.Value -> Id,Value)
+        PROPS=$(echo "${{ inputs.keep_nodes }}" | awk -F',' '{for(i=1;i<=NF;i++){split($i,a,"."); print a[3]}}' | paste -sd, -)
+        JQ_FILTER="{d: {results: [.d.results[] | {${PROPS}}]}}"
+        jq "$JQ_FILTER" "${{ inputs.filename }}" > "${{ inputs.filename }}.tmp" && mv "${{ inputs.filename }}.tmp" "${{ inputs.filename }}"

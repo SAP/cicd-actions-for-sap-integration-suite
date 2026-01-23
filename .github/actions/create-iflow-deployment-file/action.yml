@@ -1,0 +1,149 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Create IFlow Deployment File and merges existing
+description: Create IFlow Deployment File and merges existing
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  package-name:
+    description: "Package Name"
+    required: true
+  file:
+    description: "File with IFLOW IDs"
+    required: true
+    
+outputs:
+  path:
+    description: 'Directory of generated JSON file'
+    value: ${{ steps.create-deployment-file.outputs.path }}
+    
+runs:
+  using: "composite"
+  steps:
+    - id: create-deployment-file
+      shell: bash
+      working-directory: btp-insuite/IntegrationPackages
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        FILE: ${{ inputs.file }}
+      run: |
+        echo "==== Starting IFlow Deployment File Creation ===="
+        echo "Reading input file: $FILE"
+        IFLOWLIST=$(<"$FILE")
+        
+        # Count total iFlows for progress tracking
+        TOTAL_IFLOWS=$(echo "$IFLOWLIST" | jq -r '.d.results | length')
+        echo "Found $TOTAL_IFLOWS iFlows to process"
+        
+        # Initialize directory and file paths
+        DIR="$PACKAGENAME~$PACKAGEID/Configuration"
+        DEPLOYMENT_FILE="$DIR/Deployment_INTEGRATION_FLOW.json"
+        
+        # Create directory if it doesn't exist
+        if [ ! -d "$DIR" ]; then
+          mkdir -p "$DIR"
+        fi
+        
+        # Check if existing deployment file exists and read it
+        EXISTING_DEPLOYMENTS="{}"
+        EXISTING_COUNT=0
+        if [ -f "$DEPLOYMENT_FILE" ]; then
+          echo "✓ Found existing deployment file: $DEPLOYMENT_FILE"
+          EXISTING_DEPLOYMENTS=$(<"$DEPLOYMENT_FILE")
+          EXISTING_COUNT=$(echo "$EXISTING_DEPLOYMENTS" | jq -r '.PackageIntegrationFlowDeployments.IntegrationFlows | length // 0')
+          echo "  → Loaded $EXISTING_COUNT existing deployment entries"
+        else
+          echo "ℹ No existing deployment file found - creating new one"
+        fi
+        
+        # Initialize array for integration flows
+        integration_flows="[]"
+        PROCESSED_COUNT=0
+        PRESERVED_COUNT=0
+        NEW_COUNT=0
+        
+        echo ""
+        echo "==== Processing iFlows ===="
+        
+        # Process each iFlow from the input file
+        while read -r ID NAME; do
+          PROCESSED_COUNT=$((PROCESSED_COUNT + 1))
+          echo "[$PROCESSED_COUNT/$TOTAL_IFLOWS] Processing: $ID ($NAME)"
+          
+          # Check if this iFlow exists in the existing deployment file
+          EXISTING_ENTRY=$(echo "$EXISTING_DEPLOYMENTS" | jq -r --arg id "$ID" '
+            try (
+              .PackageIntegrationFlowDeployments.IntegrationFlows[] | 
+              select(.ArtifactID == $id)
+            ) catch null
+          ')
+          
+          # If existing entry found, preserve it completely (including all stage flags)
+          if [ "$EXISTING_ENTRY" != "null" ] && [ "$EXISTING_ENTRY" != "" ] && [ "$EXISTING_ENTRY" != "false" ]; then
+            PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+            echo "  → Preserved existing entry with all settings"
+            
+            # Update the name in case it changed, keep all other fields, 
+            # and ensure Deploy field exists (create with default if missing)
+            IFLOW_ENTRY=$(echo "$EXISTING_ENTRY" | jq --arg name "$NAME" '.ArtifactName = $name | .Deploy //= "false"')
+          else
+            # New entry - create with Deploy = false (no stage flags initially)
+            NEW_COUNT=$((NEW_COUNT + 1))
+            echo "  → New entry: Deploy = false (default)"
+            
+            IFLOW_ENTRY=$(jq -n --arg id "$ID" --arg name "$NAME" '
+              {
+                "ArtifactID": $id,
+                "ArtifactName": $name,
+                "Deploy": "false"
+              }
+            ')
+          fi
+          
+          # Add this iFlow to the array
+          integration_flows=$(echo "$integration_flows" | jq --argjson newFlow "$IFLOW_ENTRY" '. + [$newFlow]')
+          
+        done < <(echo "$IFLOWLIST" | jq -r '.d.results[] | "\(.Id) \(.Name)"')
+        
+        echo ""
+        echo "==== Processing Summary ===="
+        echo "Total iFlows processed: $PROCESSED_COUNT"
+        echo "Preserved existing entries: $PRESERVED_COUNT"
+        echo "New entries with defaults: $NEW_COUNT"
+        
+        # Create the final JSON structure
+        FINAL_JSON=$(jq -n --arg pkgName "$PACKAGENAME" --arg pkgID "$PACKAGEID" --argjson flows "$integration_flows" '
+          {
+            "PackageIntegrationFlowDeployments": {
+              "PackageName": $pkgName,
+              "PackageID": $pkgID,
+              "IntegrationFlows": $flows
+            }
+          }
+        ')
+        
+        # Write the final JSON directly to the deployment file (overwrite/create)
+        echo "$FINAL_JSON" > "$DEPLOYMENT_FILE"
+        
+        echo ""
+        echo "==== Deployment File Complete ===="
+        echo "✓ Deployment file saved: $DEPLOYMENT_FILE"
+        echo "✓ Total integration flows in deployment file: $(echo "$integration_flows" | jq 'length')"
+        
+        # Set output parameter with the full path to the JSON file
+        echo "path=$DEPLOYMENT_FILE" >> $GITHUB_OUTPUT

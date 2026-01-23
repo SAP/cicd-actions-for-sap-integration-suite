@@ -1,0 +1,72 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: GIT Commit
+description: GIT Commit
+
+inputs:
+  comment:
+    description: "Commit Comment"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - id: git-commit
+      working-directory: btp-insuite/IntegrationPackages
+      shell: bash
+      env:
+        COMMENT: ${{ inputs.comment }}
+        
+      run: |
+        set -e
+
+        git config user.name "${{ github.actor }}"
+        git config user.email "${{ github.actor }}@users.noreply.github.com"
+  
+        git add -A
+  
+        # Only commit if there are staged changes
+        if ! git diff --cached --quiet; then
+          git commit -m "$COMMENT"
+
+          # Try to push, retry with rebase if necessary
+          tries=5
+          count=0
+          while ! git push origin HEAD; do
+            if [ $count -ge $tries ]; then
+              echo "🛑 Push failed after $tries attempts"
+              exit 1
+            fi
+            echo "💥 Push failed, rebasing and retrying... attempt $((count+1))/$tries"
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)"
+            count=$((count + 1))
+          done
+
+          # Wait for remote branch to reflect the pushed commit
+          commit_sha=$(git rev-parse HEAD)
+          remote_branch=$(git rev-parse --abbrev-ref HEAD)
+          remote="origin"
+
+          echo "🔍 Verifying remote branch is updated with commit $commit_sha ..."
+          for i in {1..10}; do
+            git fetch $remote $remote_branch
+            remote_sha=$(git rev-parse "$remote/$remote_branch")
+            if [ "$remote_sha" = "$commit_sha" ]; then
+              echo "✅ Remote updated with the commit."
+              break
+            fi
+            echo "⏳ Waiting for remote to update... ($i/10)"
+            sleep 2
+          done
+
+          if [ "$remote_sha" != "$commit_sha" ]; then
+            echo "⚠️ Warning: Remote not updated with commit after waiting. Continue..."
+          fi
+          
+        else
+          echo "➖ No changes to commit"
+        fi

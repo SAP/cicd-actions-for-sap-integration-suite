@@ -1,0 +1,150 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: (Dev) Delete from BTP DEV/TST & GIT
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: "ID"
+        required: true
+        type: string
+      mode:
+        description: "Mode IntegrationPackages/PartnerDirectory"
+        required: true
+        type: choice
+        options:
+          - IntegrationPackages
+          - PartnerDirectory
+      commit-message:
+        description: "JIRA Story / SNOW Incident"
+        required: true
+        type: string
+      delete:
+        description: "Confirm to Delete (write DELETE)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  authorize:
+    name: Authorization Check
+    if: ${{ inputs.delete == 'DELETE' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target-env }}
+    steps:     
+      - name: Check team authorization
+        uses: SAP/cicd-actions-for-sap-integration-suite/.github/actions/check-team-authorization@v1
+        with:
+          team-slug: ${{ vars.BTP_DEV_TEAM_SLUG }}
+          github-token: ${{ secrets.GIT_ORG_TOKEN }}
+
+  read-env-vars-dev:
+    needs: authorize
+    name: Read Environment Variables and Secrets for Development
+    runs-on: ubuntu-latest
+    environment: DEV
+    outputs:
+      btp-api-user: ${{ steps.export.outputs.btp-api-user }}
+      btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
+      btp-token-url: ${{ steps.export.outputs.btp-token-url }}
+      btp-api-url: ${{ steps.export.outputs.btp-api-url }}
+    steps:
+      - name: Export secrets and vars
+        id: export
+        run: |
+          echo "::add-mask::${{ secrets.BTP_API_PASSWORD }}"
+          echo "::add-mask::${{ secrets.BTP_TEC_PASSWORD }}"
+          echo "::add-mask::${{ secrets.GIT_CICD_TOKEN }}"
+        
+          echo "btp-api-user=${{ vars.BTP_API_USER }}" >> $GITHUB_OUTPUT
+          echo "btp-tec-user=${{ vars.BTP_TEC_USER }}" >> $GITHUB_OUTPUT
+          echo "btp-token-url=${{ vars.BTP_TOKEN_URL }}" >> $GITHUB_OUTPUT
+          echo "btp-api-url=${{ vars.BTP_API_URL }}" >> $GITHUB_OUTPUT
+
+  delete-on-dev:
+    needs: read-env-vars-dev
+    name: Delete from DEV
+    uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/delete-upload.yml@v1
+    with:
+      workflow-ref: v1		
+      target-env: DEV
+      source-ref: development
+      integrationpackages-delete-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.id || '' }}
+      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id|| '' }}
+      btp-api-user: ${{ needs.read-env-vars-dev.outputs.btp-api-user }}
+      btp-tec-user: ${{ needs.read-env-vars-dev.outputs.btp-tec-user }}
+      btp-token-url: ${{ needs.read-env-vars-dev.outputs.btp-token-url }}
+      btp-api-url: ${{ needs.read-env-vars-dev.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}      
+    secrets:
+      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+
+  read-env-vars-tst:
+    needs: [delete-on-dev]
+    name: Read Environment Variables and Secrets for TST
+    runs-on: ubuntu-latest
+    environment: TST
+    outputs:
+      btp-api-user: ${{ steps.export.outputs.btp-api-user }}
+      btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
+      btp-token-url: ${{ steps.export.outputs.btp-token-url }}
+      btp-api-url: ${{ steps.export.outputs.btp-api-url }}
+    steps:
+      - name: Export secrets and vars
+        id: export
+        run: |
+          echo "::add-mask::${{ secrets.BTP_API_PASSWORD }}"
+          echo "::add-mask::${{ secrets.BTP_TEC_PASSWORD }}"
+          echo "::add-mask::${{ secrets.GIT_CICD_TOKEN }}"
+        
+          echo "btp-api-user=${{ vars.BTP_API_USER }}" >> $GITHUB_OUTPUT
+          echo "btp-tec-user=${{ vars.BTP_TEC_USER }}" >> $GITHUB_OUTPUT
+          echo "btp-token-url=${{ vars.BTP_TOKEN_URL }}" >> $GITHUB_OUTPUT
+          echo "btp-api-url=${{ vars.BTP_API_URL }}" >> $GITHUB_OUTPUT
+
+  delete-on-tst:
+    needs: read-env-vars-tst
+    name: Delete from TST
+    uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/delete-upload.yml@v1
+    with:
+      workflow-ref: v1		
+      target-env: TST
+      source-ref: development
+      integrationpackages-delete-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.id || '' }}
+      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id|| '' }}
+      btp-api-user: ${{ needs.read-env-vars-tst.outputs.btp-api-user }}
+      btp-tec-user: ${{ needs.read-env-vars-tst.outputs.btp-tec-user }}
+      btp-token-url: ${{ needs.read-env-vars-tst.outputs.btp-token-url }}
+      btp-api-url: ${{ needs.read-env-vars-tst.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}      
+    secrets:
+      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+
+  delete-from-git:
+      needs: delete-on-tst
+      name: Delete from GIT
+      uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/delete-dir-from-git.yml@v1
+      with:
+        workflow-ref: v1
+        id: ${{ inputs.id }}
+        mode: ${{ inputs.mode }}
+        source-ref: development
+        commit-message: ${{ inputs.commit-message }}
+        git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}
+      secrets:
+        GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+       
+
+

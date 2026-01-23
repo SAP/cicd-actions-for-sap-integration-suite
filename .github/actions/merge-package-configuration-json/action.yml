@@ -1,0 +1,123 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Merge Package Configuration JSON
+description: Merges two JSON files containing package configuration parameters, preserving stage-specific parameters.
+inputs:
+  new-config-file-path:
+    description: 'Path to the new JSON file that is supposed to be merged.'
+    required: true
+  package-id:
+    description: "Package ID"
+    required: true
+  package-name:
+    description: "Package Name"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    # Step 0: Look for existing parameter file (and copy new file if not existing)
+    - id: find_existing_parameter_json
+      shell: bash
+      working-directory: btp-insuite/IntegrationPackages
+      env:
+        PACKAGE_ID: ${{ inputs.package-id }}
+        PACKAGE_NAME: ${{ inputs.package-name }}
+      run: |
+        TARGET_DIR="${PACKAGE_NAME}~${PACKAGE_ID}/Configuration"
+        TARGET_CONFIG_PATH="$TARGET_DIR/ConfigParams_INTEGRATION_FLOW.json"
+        
+        if [ -f "$TARGET_CONFIG_PATH" ]; then
+          echo "Found existing JSON file at $TARGET_CONFIG_PATH: proceed with merge."
+          echo "TARGET_CONFIG_PATH=$TARGET_CONFIG_PATH" >> $GITHUB_OUTPUT
+          echo "skip_merge=false" >> $GITHUB_OUTPUT
+        else
+          echo "No existing JSON file found: skip merge."
+          mkdir -p "$TARGET_DIR"
+          cp "${{ inputs.new-config-file-path }}" "$TARGET_CONFIG_PATH"
+          
+          # Clean up the input file after copying
+          if [ -f "${{ inputs.new-config-file-path }}" ]; then
+            rm "${{ inputs.new-config-file-path }}"
+            echo "Removed input file: ${{ inputs.new-config-file-path }}"
+          fi
+          
+          echo "skip_merge=true" >> $GITHUB_OUTPUT
+        fi
+
+    # Step 2: Merge parameter files and replace existing file
+    - id: merge_parameter_json
+      if: steps.find_existing_parameter_json.outputs.skip_merge == 'false'
+      shell: bash
+      working-directory: btp-insuite/IntegrationPackages
+      env:
+          TARGET_CONFIG_PATH: ${{ steps.find_existing_parameter_json.outputs.TARGET_CONFIG_PATH }}
+          NEW_CONFIG_FILE_PATH: ${{ inputs.new-config-file-path }}
+      run: |
+        echo "Merging JSON files..."
+        # Check if files exist
+        if [ ! -f "$TARGET_CONFIG_PATH" ] || [ ! -f "$NEW_CONFIG_FILE_PATH" ]; then
+          echo "Error: Required files not found"
+          exit 1
+        fi
+        
+        # Merge JSON files - take complete new structure, preserve stage values from old for matching parameters
+        jq -s '
+          # Helper function to merge ParameterValues: Default from new + stage values from old
+          def merge_parameter_values(old_values; new_values):
+            new_values + (old_values | to_entries | map(select(.key != "Default")) | from_entries);
+          
+          .[0] as $old | .[1] as $new |
+          
+          # Start with the complete new JSON structure
+          $new |
+          
+          # Process each artifact from the new JSON
+          .PackageIntegrationFlowParameters.Artifacts |= map(
+            . as $new_artifact |
+            
+            # Try to find matching artifact in old JSON by ArtifactID
+            ($old.PackageIntegrationFlowParameters.Artifacts | map(select(.ArtifactID == $new_artifact.ArtifactID)) | first) as $old_artifact |
+            
+            if $old_artifact then
+              # Found matching artifact - process all parameters from new JSON
+              $new_artifact | .Parameters |= map(
+                . as $new_param |
+                
+                # Try to find matching parameter in old artifact by ParameterKey
+                ($old_artifact.Parameters | map(select(.ParameterKey == $new_param.ParameterKey)) | first) as $old_param |
+                
+                if $old_param and ($old_param | has("ParameterValues")) and ($new_param | has("ParameterValues")) then
+                  # Found matching parameter with ParameterValues - merge them
+                  $new_param | .ParameterValues = merge_parameter_values($old_param.ParameterValues; $new_param.ParameterValues)
+                else
+                  # No matching parameter in old or no ParameterValues - keep new parameter unchanged
+                  $new_param
+                end
+              )
+            else
+              # No matching artifact in old JSON - keep new artifact unchanged
+              $new_artifact
+            end
+          )
+        ' "$TARGET_CONFIG_PATH" "$NEW_CONFIG_FILE_PATH" > temp_merged.json
+        
+        # Validate and move the merged file
+        if [ $? -eq 0 ] && [ -s temp_merged.json ] && jq empty temp_merged.json 2>/dev/null; then
+          mv temp_merged.json "$TARGET_CONFIG_PATH"
+          echo "JSON merge completed successfully."
+          
+          # Clean up the input file
+          if [ -f "$NEW_CONFIG_FILE_PATH" ]; then
+            rm "$NEW_CONFIG_FILE_PATH"
+            echo "Removed input file: $NEW_CONFIG_FILE_PATH"
+          fi
+        else
+          echo "Error: Merge failed or resulted in invalid JSON"
+          rm -f temp_merged.json
+          exit 1
+        fi

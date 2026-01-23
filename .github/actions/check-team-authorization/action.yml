@@ -1,0 +1,115 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: 'Check Team Authorization'
+description: 'Verifies if the workflow actor is a member of a specified GitHub team'
+inputs:
+  team-slug:
+    description: 'Team slug to check membership against'
+    required: true
+  github-token:
+    description: 'GitHub token with members:read permission'
+    required: true
+  organization:
+    description: 'GitHub organization name (auto-detected if not provided)'
+    required: false
+    default: ''
+outputs:
+  authorized:
+    description: 'Whether the user is authorized (true/false)'
+    value: ${{ steps.check.outputs.authorized }}
+  user:
+    description: 'The username that was checked'
+    value: ${{ github.actor }}
+  organization:
+    description: 'The organization that was checked'
+    value: ${{ steps.check.outputs.organization }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Check team membership
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_HOST: ${{ github.server_url }}
+      run: |
+        # Auto-detect organization from repository context
+        if [ -z "${{ inputs.organization }}" ]; then
+          ORG="${{ github.repository_owner }}"
+        else
+          ORG="${{ inputs.organization }}"
+        fi
+        
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+        
+        TEAM_SLUG="${{ inputs.team-slug }}"
+        ACTOR="${{ github.actor }}"
+        
+        echo "════════════════════════════════════════════════════════"
+        echo "🔐 AUTHORIZATION CHECK"
+        echo "════════════════════════════════════════════════════════"
+        echo "👤 User: $ACTOR"
+        echo "🏢 Organization: $ORG"
+        echo "👥 Required Team: $TEAM_SLUG"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+        
+        # Save organization to output
+        echo "organization=$ORG" >> $GITHUB_OUTPUT
+        
+        # Check if user is member of the authorized team
+        if gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR" \
+          --silent 2>/dev/null; then
+          
+          echo "✅ AUTHORIZATION SUCCESSFUL"
+          echo ""
+          echo "✓ User $ACTOR is a member of '$TEAM_SLUG'"
+          echo "✓ Access granted"
+          echo "⏱️  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "authorized=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Alternative method - check if user is in team members list
+        TEAM_MEMBERS=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/orgs/$ORG/teams/$TEAM_SLUG/members" \
+          --jq '.[].login' 2>/dev/null)
+        
+        if echo "$TEAM_MEMBERS" | grep -q "^${ACTOR}$"; then
+          echo "✅ AUTHORIZATION SUCCESSFUL"
+          echo ""
+          echo "✓ User $ACTOR is a member of '$TEAM_SLUG'"
+          echo "✓ Access granted"
+          echo "⏱️  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "authorized=true" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Authorization failed
+        echo "❌ AUTHORIZATION FAILED"
+        echo ""
+        echo "✗ User $ACTOR is NOT a member of '$TEAM_SLUG'"
+        echo "✗ Access denied"
+        echo ""
+        echo "📋 To gain access:"
+        echo "   1. Check team membership at: $GITHUB_URL/orgs/$ORG/teams/$TEAM_SLUG"
+        echo "   2. Contact your team administrator to request access"
+        echo ""
+        echo "════════════════════════════════════════════════════════"
+        echo "authorized=false" >> $GITHUB_OUTPUT
+        exit 1

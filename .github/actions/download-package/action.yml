@@ -1,0 +1,92 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Sprünken)
+#
+name: 'download-package'
+description: 'Composite action to download package from BTP'
+inputs:
+  bearer-token:
+    description: 'BEARER Token to access Integration Suite Artifacts'
+    required: true
+    type: string
+  package-id:
+    description: 'Package ID'
+    required: true
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+      - name: Get Package Name
+        id: get-package-name
+        uses: ./cicd-btp-insuite/.github/actions/get-package-name
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+
+      - name: Get Package as ZIP
+        id: get-package
+        uses: ./cicd-btp-insuite/.github/actions/get-package-as-zip
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+          package-name: ${{ steps.get-package-name.outputs.name }}
+
+      - name: Prepare Repo
+        id: prepare-repo
+        uses: ./cicd-btp-insuite/.github/actions/delete-old-package-version-in-repo
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+          package-name: ${{ steps.get-package-name.outputs.name }}
+
+      - name: Extract Package into Repo
+        id: extract-zip
+        uses: ./cicd-btp-insuite/.github/actions/export-package-zip-into-repo
+        with:
+          location-zip: ${{ steps.get-package.outputs.location }}
+      
+      - name: Get IFLOW IDs of Package
+        id: get-iflow-ids
+        uses: ./cicd-btp-insuite/.github/actions/get-object-ids-of-package
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+          object-type: "Integration"
+
+      - name: Get external Parameter for a list of IFLOW IDs
+        id: get-ext-params
+        uses: ./cicd-btp-insuite/.github/actions/get-ext-param-for-iflowlist
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+          package-name: ${{ steps.get-package-name.outputs.name }}
+          file: ${{ steps.get-iflow-ids.outputs.file }}
+
+      # Merges external parameters (old and new json - only if old exists), while preserving non-default parameters.
+      - name: Merge new external parameters with pre-existing
+        id: merge-ext-params
+        uses: ./cicd-btp-insuite/.github/actions/merge-package-configuration-json
+        with:
+          new-config-file-path: ${{ steps.get-ext-params.outputs.PATH }}
+          package-id: ${{ inputs.package-id }}
+          package-name: ${{ steps.get-package-name.outputs.name }}
+
+      - name: Create IFlow Deployment File and merges existing
+        id: create-iflow-deployment-file
+        uses: ./cicd-btp-insuite/.github/actions/create-iflow-deployment-file
+        with:
+          bearer-token: ${{ inputs.bearer-token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          package-id: ${{ inputs.package-id }}
+          package-name: ${{ steps.get-package-name.outputs.name }}
+          file: ${{ steps.get-iflow-ids.outputs.file }}

@@ -1,0 +1,60 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Get CPI Package as ZIP
+description: Download Package from CPI Designtime
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+    type: string
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+    type: string
+  package-id:
+    description: "Package ID"
+    required: true
+    type: string
+  package-name:
+    description: "Package Name"
+    required: true
+    type: string
+    
+outputs:
+  location:
+    description: 'File Path to Package'
+    value: ${{ steps.get-package-as-zip.outputs.location }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: get-package-as-zip
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        
+      run: |
+        echo "Download PackageID $PACKAGEID ($PACKAGENAME) from $BTP_API_URL/api/v1/IntegrationPackages('$PACKAGEID')/\$value"
+       
+        curl_response=$(curl -o ${{ runner.temp }}/$PACKAGENAME~$PACKAGEID.zip -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/IntegrationPackages('$PACKAGEID')/\$value" \
+          -H "Authorization: $BEARER_TOKEN")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+        
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "Error: HTTP status $HTTP_STATUS received while requesting package ZIP."
+          echo "Response body:"
+          cat ${{ runner.temp }}/$PACKAGENAME~$PACKAGEID.zip
+          exit 1
+        fi
+
+        echo "location=${{ runner.temp }}/$PACKAGENAME~$PACKAGEID.zip" >> "$GITHUB_OUTPUT"

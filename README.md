@@ -1,4 +1,4 @@
-[![REUSE status](https://api.reuse.software/badge/github.com/SAP/cicd-actions-for-sap-integration-suite)](https://api.reuse.software/info/github.com/SAP/cicd-actions-for-sap-integration-suite)
+[![REUSE status](https://api.reuse.software/badge/github.com/SAP/cicd-actions-for-sap-integration-suite)](https://api.reuse.software/info/github.com/SAP/cicd-actions-for-sap-integration-suite) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache%202-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 # CICD Actions for SAP Integration Suite
 
@@ -63,11 +63,11 @@ The repository must allow:
 ### 🔐 Required Service Credentials (only examples - depends on your workflows)
 Add the following secrets per GitHub Environment - also global secrets and parameters might be needed
 
-| Secret Name          | Purpose                                  |
-|----------------------|-------------------------------------------|
-| `BTP_HOST`           | Base URL of the Integration Suite API     |
-| `BTP_CLIENT_ID`      | OAuth client ID for API authentication    |
-| `BTP_CLIENT_SECRET`  | OAuth client secret for API authentication |
+| Secret Name         | Purpose                                    |
+|---------------------|--------------------------------------------|
+| `BTP_HOST`          | Base URL of the Integration Suite API      |
+| `BTP_CLIENT_ID`     | OAuth client ID for API authentication     |
+| `BTP_CLIENT_SECRET` | OAuth client secret for API authentication |
 
 ## Support, Feedback, Contributing
 

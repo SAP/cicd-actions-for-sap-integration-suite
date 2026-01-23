@@ -1,0 +1,125 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: "Create CSV"
+description: "Create Delete / Upload CSV Files"
+
+inputs:
+  diff-filename:
+    description: "Path to file that contains diff from get-compare-file"
+    required: true
+  base-dir-file:
+    description: "Path to file that contains directory structure of base reference"
+    required: true
+  target_dir_file:
+    description: "Path to file that contains directory structure of target reference"
+    required: true
+  mode:
+    description: "Mode IntegrationPackages/PartnerDirectory"
+    required: true
+
+outputs:
+  upload-csv:
+    description: "List IDs to be uploaded"
+    value: ${{ steps.create-upload-csv.outputs.upload-csv }}
+  delete-csv:
+    description: "List IDs to be deleted"
+    value: ${{ steps.create-delete-csv.outputs.delete-csv }}
+    
+runs:
+  using: "composite"
+  steps:
+ 
+    - id: create-json
+      shell: bash
+      run: |
+        set +e  # Disable exit on error for robustness
+        DIFFJSON=$(mktemp)
+        # Extract unique second-level directory names from diff-filename
+        awk -F'/' '{if(NF>1){print $2}}' "${{ inputs.diff-filename }}" | sort | uniq > unique_dirs.txt
+        # Build JSON array
+        jq -R -s '{dirs: split("\n") | map(select(length > 0))}' unique_dirs.txt > "$DIFFJSON"
+        echo "--- DEBUG: Final DIFFJSON contents ---"
+        cat "$DIFFJSON"
+        echo "filename=$DIFFJSON" >> $GITHUB_OUTPUT
+        
+    - id: create-delete-csv
+      shell: bash
+      run: |
+        BASE_FILE="${{ inputs.base-dir-file }}"
+        TARGET_FILE="${{ inputs.target_dir_file }}"
+        DELETE_CSV="${{ runner.temp }}/${{ inputs.mode }}_to_delete.csv"
+
+        # Extract package IDs (part after ~) from both files, ignore lines without ~
+        #awk -F'~' 'NF==2 {print $2}' "$BASE_FILE" | sort | uniq > base_ids.txt
+        #awk -F'~' 'NF==2 {print $2}' "$TARGET_FILE" | sort | uniq > target_ids.txt
+
+        # Get all lines from base_ids.txt that are missing in target_ids.txt
+        grep -Fvx -f $TARGET_FILE $BASE_FILE > missing_ids.txt || true
+
+        # Join into comma-separated line
+        paste -sd, missing_ids.txt > "$DELETE_CSV"
+
+        echo "📁 Generated DELETE_CSV from missing package IDs"
+        cat "$DELETE_CSV"
+        echo "delete-csv=$DELETE_CSV" >> $GITHUB_OUTPUT
+       
+    - id: create-upload-csv
+      shell: bash
+      run: |
+        DIFFJSON=${{ steps.create-json.outputs.filename}}
+        DELETE_CSV=${{ steps.create-delete-csv.outputs.delete-csv}}
+        UPLOAD_CSV="${{ runner.temp }}/${{ inputs.mode }}_to_upload.csv"
+        
+        # Debug: print file paths
+        echo "DIFFJSON: $DIFFJSON"
+        echo "DELETE_CSV: $DELETE_CSV"
+        
+        # Ensure DIFFJSON exists
+        if [[ ! -f "$DIFFJSON" ]]; then
+          echo "{}" > "$DIFFJSON"
+        fi
+        # Ensure DELETE_CSV exists
+        if [[ ! -f "$DELETE_CSV" ]]; then
+          touch "$DELETE_CSV"
+        fi
+        
+        # Extract unique second-level directory names from DIFFJSON
+        jq -r '.dirs // [] | .[]' "$DIFFJSON" | sort | uniq > parsed_items.txt
+        # Ensure parsed_items.txt exists
+        if [[ ! -f parsed_items.txt ]]; then
+          touch parsed_items.txt
+        fi
+        
+        # Convert DELETE_CSV to newline-separated list for comparison
+        tr ',' '\n' < "$DELETE_CSV" | sort | uniq > delete_ids.txt
+        # Ensure delete_ids.txt exists
+        if [[ ! -f delete_ids.txt ]]; then
+          touch delete_ids.txt
+        fi
+        
+        # Filter out IDs that are in delete_ids.txt
+        grep -vxFf delete_ids.txt parsed_items.txt > filtered_upload_ids.txt || true
+        # Ensure filtered_upload_ids.txt exists
+        if [[ ! -f filtered_upload_ids.txt ]]; then
+          touch filtered_upload_ids.txt
+        fi
+        
+        # Join into comma-separated line
+        joined=$(paste -sd, filtered_upload_ids.txt)
+
+        # Save to UPLOAD_CSV
+        echo "$joined" > $UPLOAD_CSV
+      
+        # Debug
+        echo "📁 Generated UPLOAD_CSV (filtered)"  
+        if [[ -z "$joined" ]]; then
+          echo "UPLOAD_CSV is empty. No IDs to upload."
+        else
+          echo "UPLOAD_CSV: $joined"
+        fi
+
+        echo "upload-csv=$UPLOAD_CSV" >> $GITHUB_OUTPUT

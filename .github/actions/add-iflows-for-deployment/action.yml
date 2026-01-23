@@ -1,0 +1,252 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Frank Sprünken <accenture.spruenken@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+#
+
+name: Pass iFlow JSON with IDs to be added for deployment
+description: Process deployment configuration file and add integration flows marked for deployment
+inputs:
+  package-id:
+    description: "Package ID"
+    required: true
+  package-name:
+    description: "Package Name"
+    required: true
+  file:
+    description: "Input File from get-object-ids-of-package"
+    required: true
+  mode:
+    description: "Mode deploy/undeploy"
+    required: true
+  target-env:
+    description: "Environment, runtime should be updated in (e.g., DEV, TST, PRD, POC)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - id: add-iflows-for-deployment-from-config
+      working-directory: btp-insuite/IntegrationPackages
+      if: ${{ inputs.mode == 'deploy' }}
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        FILE: ${{ inputs.file }}
+        TARGET_ENV: ${{ inputs.target-env }}
+      run: |
+        set +e  # Do not exit on errors
+        
+        echo "==== Deployment Configuration for Target Environment: $TARGET_ENV ===="
+        
+        # Find the unique directory matching *~PACKAGEID
+        echo "Looking for top-level directories ending in ~$PACKAGEID in root..."
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *~$PACKAGEID ]]; then
+            matches+=("$dir")
+          fi
+        done
+        
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Error: Multiple directories found matching *~$PACKAGEID:"
+          for match in "${matches[@]}"; do
+            echo " - $match"
+          done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "❌ No directory found matching *~$PACKAGEID. Package not found in Repo."
+          exit 1
+        fi
+        
+        dir="${matches[0]}"
+        dir_name=$(basename "$dir")
+        echo "✅ Found package directory: $dir_name"
+        
+        # Set up deployment configuration file path
+        DEPLOYMENT_FILE="$dir/Configuration/Deployment_INTEGRATION_FLOW.json"
+        DEPLOYMENT_FILE="${DEPLOYMENT_FILE//\/\//\/}"  # Remove double slashes
+        
+        # Check if deployment configuration file exists
+        if [[ -f "$DEPLOYMENT_FILE" ]]; then
+          echo "✅ Deployment configuration found: $DEPLOYMENT_FILE"
+        else
+          echo "❌ Deployment configuration not found (nothing to deploy): $DEPLOYMENT_FILE"
+          exit 0
+        fi
+
+        # Sort integration flows: flows without Rank first (alphabetically), then flows with Rank
+        echo ""
+        echo "==== Sorting Integration Flows ===="
+        jq '.PackageIntegrationFlowDeployments.IntegrationFlows |= sort_by(has("Rank"), (.Rank // -1 | tonumber), .ArtifactName)' "$DEPLOYMENT_FILE" > "${DEPLOYMENT_FILE}.tmp" && mv "${DEPLOYMENT_FILE}.tmp" "$DEPLOYMENT_FILE"
+        echo "✅ Integration flows sorted: unranked flows first (alphabetically), then ranked flows (by Rank)"		
+        
+        # Set output file path
+        DEPLOY_RESULT="${{ runner.temp }}/DeployTask.${PACKAGEID}"
+        
+        echo ""
+        echo "==== Processing Integration Flows for $TARGET_ENV ===="
+        
+        # Process integration flows using stage-specific logic
+        deploy_count=0
+        skip_count=0
+        
+        # Read all integration flows from the deployment file
+        while IFS= read -r iflow_entry; do
+          artifact_id=$(echo "$iflow_entry" | jq -r '.ArtifactID')
+          artifact_name=$(echo "$iflow_entry" | jq -r '.ArtifactName')
+          
+          # Check if stage-specific key exists for target environment
+          stage_value=$(echo "$iflow_entry" | jq -r --arg env "$TARGET_ENV" '.[$env] // "not_found"')
+          
+          # Determine deployment decision
+          if [[ "$stage_value" != "not_found" ]]; then
+            # Stage-specific value exists - use it
+            deploy_decision="$stage_value"
+            echo "[$artifact_id] $artifact_name"
+            echo "  → Stage-specific setting found: $TARGET_ENV = $deploy_decision"
+          else
+            # No stage-specific value - fall back to Deploy key
+            deploy_decision=$(echo "$iflow_entry" | jq -r '.Deploy // "false"')
+            echo "[$artifact_id] $artifact_name"
+            echo "  → No $TARGET_ENV setting found, using Deploy = $deploy_decision"
+          fi
+          
+          # Add to deployment if decision is "true"
+          if [[ "$deploy_decision" == "true" ]]; then
+            deploy_count=$((deploy_count + 1))
+            echo "  ✅ Adding to deployment queue"
+            
+            # Check whether deploy result file exists. If not, create header
+            if [ ! -f "$DEPLOY_RESULT" ]; then
+              jq -n \
+              --arg id "$artifact_id" \
+              --arg name "$artifact_name" \
+              --arg type "Integration" \
+              --arg action "${{ inputs.mode }}" \
+              --arg packageid "$PACKAGEID" \
+              --arg packagename "$PACKAGENAME" \
+              '{d: {deploytasks: [{id: $id, name: $name, type: $type, action: $action}], packageid: $packageid, packagename: $packagename}}' > "$DEPLOY_RESULT"
+            else
+              # Add new entry if it doesn't already exist
+              jq --arg id "$artifact_id" --arg name "$artifact_name" --arg type "Integration" --arg action "${{ inputs.mode }}" \
+              '.d.deploytasks += (
+                if (.d.deploytasks // [] | any(.id == $id and .name == $name and .type == $type and .action == $action)) 
+                  then []
+                else [{"id": $id, "name": $name, "type": $type, "action": $action}] 
+                end
+              )' "$DEPLOY_RESULT" > tmp.json && mv tmp.json "$DEPLOY_RESULT"
+            fi
+          else
+            skip_count=$((skip_count + 1))
+            echo "  ⊘ Skipped (not marked for $TARGET_ENV deployment)"
+          fi
+          echo ""
+          
+        done < <(jq -c '.PackageIntegrationFlowDeployments.IntegrationFlows[]' "$DEPLOYMENT_FILE")
+        
+        echo "==== Deployment Summary for $TARGET_ENV ===="
+        echo "Total IFlows to deploy: $deploy_count"
+        echo "Total IFlows skipped: $skip_count"
+        
+        # Exit early if no flows are marked for deployment
+        if [[ $deploy_count -eq 0 ]]; then
+          echo ""
+          echo "⚠️  No Integration Flows marked for deployment in $TARGET_ENV environment."
+          exit 0
+        fi
+        
+        echo ""
+        echo "==== Final Deployment Configuration ===="
+        cat "$DEPLOY_RESULT"
+
+    - id: add-iflows-for-undeployment
+      working-directory: btp-insuite/IntegrationPackages
+      if: ${{ inputs.mode == 'undeploy' }}
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        PACKAGENAME: ${{ inputs.package-name }}
+        FILE: ${{ inputs.file }}
+        TARGET_ENV: ${{ inputs.target-env }}
+      run: |
+        set +e  # Do not exit on errors
+        
+        echo "==== Undeployment Configuration for Target Environment: $TARGET_ENV ===="
+        
+        # Check if file was passed
+        if [[ -f "$FILE" ]]; then
+          echo "✅ File with IDs found: $FILE"
+        else
+          echo "❌ File with IDs not found: $FILE"
+          exit 1
+        fi
+
+        # Extract the filename (basename)
+        filename=$(basename "$FILE")
+        first_part=${filename%%.*}
+        # Remove 'DesigntimeArtifacts' from the first part
+        ArtifactType=${first_part//DesigntimeArtifacts/}
+        echo "Detected ArtifactType = $ArtifactType"
+
+        # Set FileName for Output
+        DEPLOY_RESULT="${{ runner.temp }}/DeployTask.${PACKAGEID}"
+       
+        # Extract all IDs from FILE
+        ids=$(jq -r '.d.results[] | .Id' "$FILE")
+
+        # Exit early if no IDs were found
+        if [[ -z "$ids" ]]; then
+          echo "No IDs found for type '$ArtifactType'. Nothing to Undeploy."
+          exit 0
+        fi
+
+        echo ""
+        echo "==== Processing Artifacts for Undeployment ===="
+        
+        # Add each ID for undeployment
+        undeploy_count=0
+        for id in $ids; do
+          undeploy_count=$((undeploy_count + 1))
+          echo "✅ Add $id to undeployment"
+
+          # Get ArtifactName
+          ArtifactName=$(jq -r --arg id "$id" '.d.results[] | select(.Id == $id) | .Name' "$FILE")
+          
+          # Add ID to DEPLOY_RESULT
+          # Check whether file exists. If not create header and remember 
+          if [ ! -f "$DEPLOY_RESULT" ]; then
+            echo "  → Creating deployment task file"
+              
+            jq -n \
+            --arg id "$id" \
+            --arg name "$ArtifactName" \
+            --arg type "$ArtifactType" \
+            --arg action "${{ inputs.mode }}" \
+            --arg packageid "$PACKAGEID" \
+            --arg packagename "$PACKAGENAME" \
+            '{d: {deploytasks: [{id: $id, name: $name, type: $type, action: $action}], packageid: $packageid, packagename: $packagename}}' > "$DEPLOY_RESULT"
+
+          else
+            # Add new entry
+            echo "  → Adding to existing deployment task file"
+
+            jq --arg id "$id" --arg name "$ArtifactName" --arg type "$ArtifactType" --arg action "${{ inputs.mode }}" \
+            '.d.deploytasks += (
+              if (.d.deploytasks // [] | any(.id == $id and .name == $name and .type == $type and .action == $action)) 
+                then [] 
+              else [{"id": $id, "name": $name, "type": $type, "action": $action}] 
+              end
+            )' "$DEPLOY_RESULT" > tmp.json && mv tmp.json "$DEPLOY_RESULT"
+          fi
+        done
+        
+        echo ""
+        echo "==== Undeployment Summary ===="
+        echo "Total artifacts to undeploy: $undeploy_count"
+        echo ""
+        echo "==== Final Undeployment Configuration ===="
+        cat "$DEPLOY_RESULT"

@@ -1,0 +1,80 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: 'Process CSV with Regex'
+description: 'Processes a CSV file, applies a regex to each item, and returns the result as a CSV string.'
+inputs:
+  csv_file:
+    description: 'Path to the CSV file to process.'
+    required: true
+  regex:
+    description: 'Regex pattern to apply to each item.'
+    required: true
+outputs:
+  result:
+    description: 'Processed CSV string.'
+    value: ${{ steps.process_csv_with_regex.outputs.result }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Process CSV with Regex
+      id: process_csv_with_regex
+      shell: bash
+      env:
+        CSV_FILE: ${{ inputs.csv_file }}
+        REGEX: ${{ inputs.regex }}
+      run: |
+        set -e
+        
+        # Check if file exists
+        if [ ! -f "$CSV_FILE" ]; then
+          echo "Error: File '$CSV_FILE' not found!"
+          exit 1
+        fi
+        
+        # Read CSV content from file
+        CSV_STRING=$(cat "$CSV_FILE")
+        
+        # Log input CSV
+        echo "::group::CSV Input"
+        echo "Input CSV file: $CSV_FILE"
+        echo "Input CSV content: $CSV_STRING"
+        echo "Regex pattern: $REGEX"
+        echo "::endgroup::"
+        
+        # Parse CSV string into array
+        IFS=',' read -ra ITEMS <<< "$CSV_STRING"
+        RESULT=""
+        # Process each item with regex
+        for ITEM in "${ITEMS[@]}"; do
+          if [[ "$ITEM" =~ $REGEX ]]; then
+            MATCH="${BASH_REMATCH[1]}"
+            if [ -z "$RESULT" ]; then
+              RESULT="$MATCH"
+            else
+              RESULT="$RESULT,$MATCH"
+            fi
+          else
+            # Preserve position for empty match
+            if [ -z "$RESULT" ]; then
+              RESULT=""
+            else
+              RESULT="$RESULT," 
+            fi
+          fi
+        done
+        
+        # Log output CSV
+        echo "::group::CSV Output"
+        echo "Output CSV string: $RESULT"
+        echo "::endgroup::"
+        
+        # Write result back to file
+        echo "$RESULT" > "$CSV_FILE"
+        echo "Result written back to file: $CSV_FILE"
+        
+        # Set output
+        echo "result=$RESULT" >> $GITHUB_OUTPUT

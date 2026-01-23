@@ -1,0 +1,76 @@
+# Copyright (c) 2025 Mercedes-Benz AG
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+#
+name: Get OAuth Token
+description: Requests OAuth token and outputs it
+
+inputs:
+  btp-api-user:
+    description: "BTP Service Key (ClientID) to access Token Endpoint"
+    required: true
+    type: string
+  btp-tec-user:
+    description: "BTP technical User with Access Policy for Integration Suite"
+    required: true
+    type: string
+  btp-token-url:
+    description: "URL on BTP to request Token"
+    required: true
+  BTP_API_PASSWORD:
+    description: "Client Secret for API User"
+    required: true  
+  BTP_TEC_PASSWORD:
+    description: "Passsword of technical User"
+    required: true
+
+outputs:
+  token:
+    description: 'OAuth access token'
+    value: ${{ steps.set-token.outputs.token }}   # <-- important!
+
+runs:
+  using: "composite"
+  steps:
+    - id: set-token    # <-- ID used for output mapping
+      env:             # Needed to safely use User Password containing special characters especially $
+        btp_api_user: ${{ inputs.btp-api-user }}
+        btp_tec_user: ${{ inputs.btp-tec-user }}
+        btp_token_url: ${{ inputs.btp-token-url }}
+        BTP_API_PASSWORD: ${{ inputs.BTP_API_PASSWORD }}
+        BTP_TEC_PASSWORD: ${{ inputs.BTP_TEC_PASSWORD }}
+      shell: bash
+      run: |
+        echo "Requesting OAuth token from: $btp_token_url"
+
+        UserPassword="$btp_api_user:$BTP_API_PASSWORD"
+        BASIC_AUTH=$(echo -n "$UserPassword" | base64)
+
+        curl_response=$(curl -s -w "\n%{http_code}" -X POST "$btp_token_url" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -u "$UserPassword" \
+          --data-urlencode "grant_type=password" \
+          --data-urlencode "username=$btp_tec_user" \
+          --data-urlencode "password=$BTP_TEC_PASSWORD" \
+          --data-urlencode "client_id=$btp_api_user")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "Error: HTTP status $HTTP_STATUS received while requesting OAuth token."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+
+        TOKEN=$(echo "$BODY" | jq -r '.access_token')
+
+        if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
+          echo "Error: Access token not found in response."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+
+        echo "token=Bearer $TOKEN" >> "$GITHUB_OUTPUT"
