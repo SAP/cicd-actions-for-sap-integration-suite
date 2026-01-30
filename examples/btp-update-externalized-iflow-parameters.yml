@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Dev) Update Externalized Parameters for IFlow on DEV or TST
@@ -22,7 +23,7 @@ on:
         required: true
         type: string
       iflow-deploy:
-        description: "Deploy Integration Flow?"
+        description: "Evaluate Deployment JSON?"
         required: true
         type: choice
         options:
@@ -35,7 +36,7 @@ permissions:
 jobs:
   authorize:
     name: Authorization Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     steps:     
       - name: Check team authorization
@@ -47,7 +48,7 @@ jobs:
   read-env-vars:
     needs: authorize
     name: Read Environment Variables and Secrets
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}

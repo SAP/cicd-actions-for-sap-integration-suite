@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON
 #
 name: Update Externalized Parameters For IFlow
 
@@ -61,7 +62,7 @@ on:
 jobs:
   update-externalized-parameters-for-iflow:
     name: Update IFLOW ${{ inputs.iflow-id }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
 
     steps:
@@ -70,7 +71,7 @@ jobs:
           ref: ${{ inputs.source-ref }}
           path: btp-insuite
 
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
@@ -110,11 +111,11 @@ jobs:
     needs: update-externalized-parameters-for-iflow
     name: Deploy IFLOW ${{ inputs.iflow-id }}
     if: inputs.iflow-deploy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}

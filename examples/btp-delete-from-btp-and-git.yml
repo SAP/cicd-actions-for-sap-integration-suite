@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Dev) Delete from BTP DEV/TST & GIT
@@ -37,7 +38,7 @@ jobs:
   authorize:
     name: Authorization Check
     if: ${{ inputs.delete == 'DELETE' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     steps:     
       - name: Check team authorization
@@ -49,7 +50,7 @@ jobs:
   read-env-vars-dev:
     needs: authorize
     name: Read Environment Variables and Secrets for Development
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: DEV
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}
@@ -92,7 +93,7 @@ jobs:
   read-env-vars-tst:
     needs: [delete-on-dev]
     name: Read Environment Variables and Secrets for TST
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: TST
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}

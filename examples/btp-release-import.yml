@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Admin) BTP Release Manager
@@ -40,7 +41,7 @@ permissions:
 jobs:
   authorize:
     name: Authorization Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     steps:     
       - name: Check team authorization
@@ -53,7 +54,7 @@ jobs:
     needs: authorize
     name: Read Vars & Secrets ${{ github.event.inputs.target-env }}
     environment: ${{ github.event.inputs.target-env }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}
       btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
