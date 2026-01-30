@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Dev) BTP Download to GIT and Upload/Deploy to TST
@@ -32,7 +33,7 @@ permissions:
 jobs:
   authorize:
     name: Authorization Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: DEV
     steps:     
       - name: Check team authorization
@@ -44,7 +45,7 @@ jobs:
   read-env-vars-dev:
     needs: authorize
     name: Read Vars & Secrets DEV
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: DEV
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}
@@ -88,7 +89,7 @@ jobs:
   read-env-vars-tst:
     needs: [btp-download-btp]
     name: Read Vars & Secrets TST
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: TST
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}

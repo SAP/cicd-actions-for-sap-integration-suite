@@ -4,64 +4,27 @@
 
 ## About this project
 
-An open-source solution leveraging GitHub Actions to automate deployment for SAP Integration Suite. It standardizes CI/CD processes, supports package management, parameter updates, and one-click release imports, ensuring consistent and efficient integration across environments
+This repository provides a GitHub Actions–based CI/CD control layer for SAP Integration Suite.
 
-## 🛠️ Requirements and Setup
-This repository enables automated CI/CD processes for the SAP Integration Suite using **GitHub Actions**. It supports operations such as:
+## Overview
 
-- Downloading and uploading integration packages / partner directory entries
-- Synchronizing Design Time ↔ Runtime
-- Autmatic deployment of mappings, script collections and value mappings to DEV / TST / PRD
-- Managing externalized parameters
-- Managing deployments of IFLOWs
+- **Integration packages** and **Partner Directory IDs** are downloaded from SAP Integration Suite, extracted, and **stored in Git**  
+- Git holds both the **content** and **configuration**:
+  - Externalized parameter values for IFLOWs  
+  - Deployment configuration for IFLOWs
+- **GitHub Actions** orchestrate:
+  - Synchronization between Design Time and Runtime  
+  - Deployment of packages and Partner Directory content to DEV / TST / PRD  
+  - Application of environment-specific configuration  
+  - Calculate Release Import based on GIT Tags or Branches
 
-All operations are executed via the **public APIs of the Integration Suite**.
+All operations use **public Integration Suite APIs only**.
 
-## ⚙️ Requirements
+For more details on **initial setup** and **operations**, see the [detailed documentation](./documentation/README.md).
 
-To use the GitHub‑Actions–based CI/CD automation for **SAP Integration Suite**, ensure the following prerequisites are in place:
+## Compatibility
 
-## 📁 Repository Setup
-
-Prepare a new repository that shall contain the design artifacts downloaded from SAP Integration Suite
-
-### Initial Setup
-
-At the beginning, the repository only needs:
-
-```
-.github/workflows/
-
-```
-
-This folder contains all GitHub Action workflows that you can copy from this repositiry under templates which after adjustment to your needs control the CI/CD logic.
-
-> Note: No integration artifacts or configuration files are needed initially. These are added later through the automation process.
-
----
-
-### 🌐 Access to SAP BTP Integration Suite APIs
-The CI/CD pipelines use **publicly documented APIs** of the Integration Suite for:
-- Package download & upload
-- Partner Directoy download & upload
-- Synchronization of Design Time ↔ Runtime
-- Deployment of releases
-- Updating external parameters
-- Deploy IFLOWs per configuration
-
-Ensure that:
-- API access is enabled
-- Required roles/permissions are assigned
-
-### ⚡ GitHub Actions Enabled
-The repository must allow:
-- Running GitHub Actions
-- Using reusable workflows
-- Accessing GitHub Environments
-
-### 🧩 GitHub Environments
-- Separate GitHub environments (`DEV`, `TST`, `PRD`)
-- Branch protection rules
+Tested with GitHub Enterprise Cloud and GitHub Enterprise Server.
 
 ## Support, Feedback, Contributing
 

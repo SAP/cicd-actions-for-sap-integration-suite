@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON
 #
 name: Delete / Upload IntegrationPackages/PartnerDirectory
 
@@ -75,7 +76,7 @@ jobs:
   preprocess-ids:
     name: Preprocess Ids
     environment: ${{ github.event.inputs.target-env }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     outputs:
       integrationpackages_to_upload: ${{ steps.parse-csv-to-json-packages.outputs.to_upload }}
       integrationpackages_all_ids: ${{ steps.parse-csv-to-json-packages.outputs.all_ids }}
@@ -83,7 +84,7 @@ jobs:
       partnerdirectory_all_ids: ${{ steps.parse-csv-to-json-pid.outputs.all_ids }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
@@ -111,7 +112,7 @@ jobs:
     name: Prepare & Attach ZIP Packages
     needs: [preprocess-ids]
     if: ${{ inputs.attach-zip-only == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
 
     strategy:
       max-parallel: 5
@@ -119,7 +120,7 @@ jobs:
         id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_to_upload) }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -151,10 +152,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_all_ids) }}    
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -168,7 +169,7 @@ jobs:
         uses: ./cicd-btp-insuite/.github/actions/update-runtime
         with:
           target-env: ${{ inputs.target-env }}
-          source-ref: ${{ inputs.current-tag }}
+          source-ref: ${{ inputs.source-ref }}
           package-id: ${{ matrix.id }}
           mode: "Undeploy"
           btp-api-user: ${{ inputs.btp-api-user }}
@@ -188,10 +189,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.partnerdirectory_all_ids) }}    
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -229,10 +230,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_all_ids) }} 
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
       
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -266,10 +267,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_to_upload) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -303,10 +304,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.partnerdirectory_to_upload) }}    
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -339,10 +340,10 @@ jobs:
       fail-fast: false
       matrix:
         id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_to_upload) }} 
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         if: ${{ matrix.id != 'EmptyMatrix' }}
         uses: actions/checkout@v4
         with:
@@ -371,7 +372,7 @@ jobs:
     needs: [preprocess-ids, attach-zips-only, btp-runtime-delete, btp-pd-delete, btp-designtime-delete, btp-designtime-upload, btp-pd-upload, btp-update-runtime]
     environment: ${{ inputs.target-env }}
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     steps:
       - name: Echo Status
         run: |

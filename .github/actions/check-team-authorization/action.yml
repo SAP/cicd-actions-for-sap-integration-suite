@@ -3,7 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
-#
+# 1.0.1 - 2026-01-26 - Added more logging (O. Weng)
 
 name: 'Check Team Authorization'
 description: 'Verifies if the workflow actor is a member of a specified GitHub team'
@@ -36,8 +36,10 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        GH_HOST: ${{ github.server_url }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
       run: |
+        set +e
+        
         # Auto-detect organization from repository context
         if [ -z "${{ inputs.organization }}" ]; then
           ORG="${{ github.repository_owner }}"
@@ -59,22 +61,31 @@ runs:
         echo "🏢 Organization: $ORG"
         echo "👥 Required Team: $TEAM_SLUG"
         echo "📦 Repository: ${{ github.repository }}"
+        echo "🌐 GitHub URL: $GITHUB_URL"
         echo "════════════════════════════════════════════════════════"
         echo ""
         
         # Save organization to output
         echo "organization=$ORG" >> $GITHUB_OUTPUT
         
+        # Verify token is available
+        if [ -z "$GH_TOKEN" ]; then
+          echo "❌ ERROR: GitHub token is not set or empty"
+          echo "authorized=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
         # Check if user is member of the authorized team
-        if gh api --hostname "$GH_HOSTNAME" \
+        response=$(gh api --hostname "$GH_HOSTNAME" \
           -H "Accept: application/vnd.github+json" \
-          "/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR" \
-          --silent 2>/dev/null; then
-          
+          "/orgs/$ORG/teams/$TEAM_SLUG/memberships/$ACTOR" 2>&1)
+        status=$?
+        
+        if [ $status -eq 0 ]; then
           echo "✅ AUTHORIZATION SUCCESSFUL"
           echo ""
           echo "✓ User $ACTOR is a member of '$TEAM_SLUG'"
-          echo "✓ Access granted"
+          echo "✓ Access granted (via membership API)"
           echo "⏱️  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           echo ""
           echo "════════════════════════════════════════════════════════"
@@ -83,21 +94,25 @@ runs:
         fi
         
         # Alternative method - check if user is in team members list
-        TEAM_MEMBERS=$(gh api --hostname "$GH_HOSTNAME" \
+        response2=$(gh api --hostname "$GH_HOSTNAME" \
           -H "Accept: application/vnd.github+json" \
-          "/orgs/$ORG/teams/$TEAM_SLUG/members" \
-          --jq '.[].login' 2>/dev/null)
+          "/orgs/$ORG/teams/$TEAM_SLUG/members" 2>&1)
+        status2=$?
         
-        if echo "$TEAM_MEMBERS" | grep -q "^${ACTOR}$"; then
-          echo "✅ AUTHORIZATION SUCCESSFUL"
-          echo ""
-          echo "✓ User $ACTOR is a member of '$TEAM_SLUG'"
-          echo "✓ Access granted"
-          echo "⏱️  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-          echo ""
-          echo "════════════════════════════════════════════════════════"
-          echo "authorized=true" >> $GITHUB_OUTPUT
-          exit 0
+        if [ $status2 -eq 0 ]; then
+          TEAM_MEMBERS=$(echo "$response2" | jq -r '.[].login' 2>/dev/null)
+          
+          if echo "$TEAM_MEMBERS" | grep -q "^${ACTOR}$"; then
+            echo "✅ AUTHORIZATION SUCCESSFUL"
+            echo ""
+            echo "✓ User $ACTOR is a member of '$TEAM_SLUG'"
+            echo "✓ Access granted (via team members list)"
+            echo "⏱️  Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo ""
+            echo "════════════════════════════════════════════════════════"
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
         fi
         
         # Authorization failed
