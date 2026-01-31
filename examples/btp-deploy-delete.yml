@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Admin) BTP Deploy/Delete Manager
@@ -28,7 +29,15 @@ on:
       source-ref:
         description: "GIT Source Reference"
         required: true
-        type: string   
+        type: string
+      attach-zip-only:
+        description: "Only attach ZIP of Package(s)?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - false
+          - true        
       target-env:
         description: "Target BTP Environment"
         required: false
@@ -44,7 +53,7 @@ permissions:
 jobs:
   authorize:
     name: Authorization Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     steps:     
       - name: Check team authorization
@@ -57,7 +66,7 @@ jobs:
     needs: authorize
     name: Read Vars & Secrets ${{ github.event.inputs.target-env }}
     environment: ${{ github.event.inputs.target-env }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}
       btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
@@ -91,6 +100,7 @@ jobs:
       integrationpackages-upload-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.upload-ids || '' }}
       partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.delete-ids || '' }}
       partnerdirectory-upload-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.upload-ids || '' }}
+      attach-zip-only: ${{ github.event.inputs.attach-zip-only }}
       btp-api-user: ${{ needs.read-env-vars.outputs.btp-api-user }}
       btp-tec-user: ${{ needs.read-env-vars.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars.outputs.btp-token-url }}

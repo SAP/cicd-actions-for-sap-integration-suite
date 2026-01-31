@@ -138,7 +138,7 @@ Compares two Git references (branches/tags) to identify changed integration pack
 ```yaml
 jobs:
   analyze_and_deploy:
-    uses: owner/mb-cicd-btp-insuite/.github/workflows/analyze-changes.yml@main
+    uses: owner/cicd-insuite/.github/workflows/analyze-changes.yml@main
     with:
       workflow-ref: 'main'
       target-env: 'PRD'
@@ -149,7 +149,7 @@ jobs:
       btp-tec-user: ${{ vars.BTP_TEC_USER }}
       btp-token-url: ${{ vars.BTP_TOKEN_URL }}
       btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/mb-cicd-btp-insuite'
+      git-cicd-orgrepo: 'owner/cicd-intsuite'
     secrets:
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
@@ -190,7 +190,7 @@ Deploys or deletes integration packages and partner directory entries in BTP.
 ```yaml
 jobs:
   deploy_packages:
-    uses: owner/mb-cicd-btp-insuite/.github/workflows/delete-upload.yml@main
+    uses: owner/cicd-intsuite/.github/workflows/delete-upload.yml@main
     with:
       workflow-ref: 'main'
       target-env: 'DEV'
@@ -203,7 +203,7 @@ jobs:
       btp-tec-user: ${{ vars.BTP_TEC_USER }}
       btp-token-url: ${{ vars.BTP_TOKEN_URL }}
       btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/mb-cicd-btp-insuite'
+      git-cicd-orgrepo: 'owner/cicd-intsuite'
     secrets:
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
@@ -243,7 +243,7 @@ Downloads integration packages or partner directory entries from BTP and commits
 ```yaml
 jobs:
   download_from_btp:
-    uses: owner/mb-cicd-btp-insuite/.github/workflows/download-btp-to-git.yml@main
+    uses: owner/cicd-intsuite/.github/workflows/download-btp-to-git.yml@main
     with:
       workflow-ref: 'main'
       source-env: 'DEV'
@@ -255,7 +255,7 @@ jobs:
       btp-tec-user: ${{ vars.BTP_TEC_USER }}
       btp-token-url: ${{ vars.BTP_TOKEN_URL }}
       btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/mb-cicd-btp-insuite'
+      git-cicd-orgrepo: 'owner/cicd-intsuite'
     secrets:
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
@@ -288,14 +288,14 @@ Removes an integration package or partner directory folder from the Git reposito
 ```yaml
 jobs:
   delete_from_git:
-    uses: owner/mb-cicd-btp-insuite/.github/workflows/delete-dir-from-git.yml@main
+    uses: owner/cicd-intsuite/.github/workflows/delete-dir-from-git.yml@main
     with:
       workflow-ref: 'main'
       id: 'ObsoletePackage~PackageId'
       mode: 'IntegrationPackages'
       source-ref: 'main'
       commit-message: 'Remove obsolete package'
-      git-cicd-orgrepo: 'owner/mb-cicd-btp-insuite'
+      git-cicd-orgrepo: 'owner/cicd-intsuite'
     secrets:
       GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
 ```
@@ -332,7 +332,7 @@ Updates externalized parameters for a specific iFlow and optionally deploys it.
 ```yaml
 jobs:
   update_parameters:
-    uses: owner/mb-cicd-btp-insuite/.github/workflows/update-externalized-iflow-parameters.yml@main
+    uses: owner/cicd-intsuite/.github/workflows/update-externalized-iflow-parameters.yml@main
     with:
       workflow-ref: 'main'
       target-env: 'TST'
@@ -343,7 +343,7 @@ jobs:
       btp-tec-user: ${{ vars.BTP_TEC_USER }}
       btp-token-url: ${{ vars.BTP_TOKEN_URL }}
       btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/mb-cicd-btp-insuite'
+      git-cicd-orgrepo: 'owner/cicd-intsuite'
     secrets:
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}

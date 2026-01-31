@@ -9,12 +9,16 @@ description: Pass JSON with IDs to be added to .github/actions/perform-deploymen
 
 inputs:
   PACKAGEID:
+    description: "Package ID"
     required: true
   PACKAGENAME:
+    description: "Package Name"
     required: true    
   FILE:
+    description: "Input File from get-object-ids-of-package"
     required: true
   STAGE:
+    description: "Deployment Stage"
     required: true
 
 runs:

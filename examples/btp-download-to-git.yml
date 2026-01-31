@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 #
 
 name: (Admin) BTP Download into GIT download Branch
@@ -38,7 +39,7 @@ permissions:
 jobs:
   authorize:
     name: Authorization Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.source-env }}
     steps:     
       - name: Check team authorization
@@ -50,7 +51,7 @@ jobs:
   read-env-vars:
     needs: [authorize]
     name: Read Vars & Secrets Development
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.source-env }}
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}

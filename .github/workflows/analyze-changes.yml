@@ -3,6 +3,8 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
+# 1.0.2 - 2026-01-28 - Changed to actions/upload-artifact@v3 to support also older GHES installations (O. Weng)
 #
 name: Analyze Changes between 2 GIT Ref/Tag
 
@@ -75,7 +77,7 @@ jobs:
   analyze-changes:
     name: ${{ inputs.base-ref }} -> ${{ inputs.target-ref }}
     environment: ${{ github.event.inputs.target-env }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     outputs:
       package_upload_csv_content: ${{ steps.output-csv-contents.outputs.package_upload_content }}
       package_delete_csv_content: ${{ steps.output-csv-contents.outputs.package_delete_content }}
@@ -83,7 +85,7 @@ jobs:
       pid_delete_csv_content: ${{ steps.output-csv-contents.outputs.pid_delete_content }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
@@ -175,7 +177,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Upload built artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: git-diff-result.zip
           path: |

@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-26 - Adding client_credentials grant flow (O. Weng)
 #
 name: Get OAuth Token
 description: Requests OAuth token and outputs it
@@ -11,11 +12,9 @@ inputs:
   btp-api-user:
     description: "BTP Service Key (ClientID) to access Token Endpoint"
     required: true
-    type: string
   btp-tec-user:
-    description: "BTP technical User with Access Policy for Integration Suite"
-    required: true
-    type: string
+    description: "BTP technical User with Access Policy for Integration Suite (optional, if empty client_credentials flow is used)"
+    required: false
   btp-token-url:
     description: "URL on BTP to request Token"
     required: true
@@ -23,8 +22,8 @@ inputs:
     description: "Client Secret for API User"
     required: true  
   BTP_TEC_PASSWORD:
-    description: "Passsword of technical User"
-    required: true
+    description: "Password of technical User (optional, required only for password grant flow)"
+    required: false
 
 outputs:
   token:
@@ -48,13 +47,25 @@ runs:
         UserPassword="$btp_api_user:$BTP_API_PASSWORD"
         BASIC_AUTH=$(echo -n "$UserPassword" | base64)
 
-        curl_response=$(curl -s -w "\n%{http_code}" -X POST "$btp_token_url" \
-          -H "Content-Type: application/x-www-form-urlencoded" \
-          -u "$UserPassword" \
-          --data-urlencode "grant_type=password" \
-          --data-urlencode "username=$btp_tec_user" \
-          --data-urlencode "password=$BTP_TEC_PASSWORD" \
-          --data-urlencode "client_id=$btp_api_user")
+        # Check if technical user credentials are provided
+        if [ -z "$btp_tec_user" ] || [ -z "$BTP_TEC_PASSWORD" ]; then
+          echo "Using client_credentials grant flow"
+          curl_response=$(curl -s -w "\n%{http_code}" -X POST "$btp_token_url" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -u "$UserPassword" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=$btp_api_user" \
+            --data-urlencode "client_secret=$BTP_API_PASSWORD")
+        else
+          echo "Using password grant flow"
+          curl_response=$(curl -s -w "\n%{http_code}" -X POST "$btp_token_url" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -u "$UserPassword" \
+            --data-urlencode "grant_type=password" \
+            --data-urlencode "username=$btp_tec_user" \
+            --data-urlencode "password=$BTP_TEC_PASSWORD" \
+            --data-urlencode "client_id=$btp_api_user")
+        fi
 
         HTTP_STATUS=$(echo "$curl_response" | tail -n1)
         BODY=$(echo "$curl_response" | sed '$d')

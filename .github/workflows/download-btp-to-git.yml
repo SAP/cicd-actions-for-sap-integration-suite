@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
 #
 name: Download CPI Package into GIT
 
@@ -71,7 +72,7 @@ permissions:
 jobs:
   preparation:
     name: Prepare ${{ inputs.mode }} ID(s) 
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.source-env }}
     outputs:
       ids-json: ${{ steps.parse-ids.outputs.ids-json }}		
@@ -99,7 +100,7 @@ jobs:
   download-id:
     needs: preparation
     name: ${{ matrix.id }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.source-env }}
     strategy:
       max-parallel: 1
@@ -107,7 +108,7 @@ jobs:
         id: ${{ fromJson(needs.preparation.outputs.ids-json) }}
 
     steps:
-      - name: Checkout mb-cicd-btp-insuite repo
+      - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}

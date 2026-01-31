@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-01-28 - Changed to actions/upload-artifact@v3 to support also older GHES installations (O. Weng)
 #
 name: Prepare ZIP Package from GIT
 description: Prepare ZIP Package from GIT
@@ -11,13 +12,11 @@ inputs:
   package-id:
     description: "Package ID"
     required: true
-    type: string
 
   attach-zip:
     description: "Attach Package(s) ZIP to Run? (true/false)"
     required: false
     default: "false"
-    type: string
 
 outputs:
   location:
@@ -107,7 +106,7 @@ runs:
 
     - name: Upload ZIP artifact
       if: ${{ inputs.attach-zip == 'true' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: ${{ steps.prepare-zip.outputs.package_dir_name }}
         path: ${{ steps.prepare-zip.outputs.location }}        
