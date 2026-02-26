@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
+# 1.0.2 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
 #
 name: Delete / Upload IntegrationPackages/PartnerDirectory
 
@@ -42,7 +43,12 @@ on:
         description: "Only Attach ZIP file for Package(s)?"
         required: false
         default: "false"
-        type: string        
+        type: string
+      exclude-iflow-ids:
+        description: "Comma-separated list of IFLOW IDs to exclude from deployment"
+        required: false
+        default: ""
+        type: string
       btp-api-user:
         description: "BTP Service Key (ClientID) to access Token Endpoint"
         required: true
@@ -367,6 +373,7 @@ jobs:
           btp-api-url: ${{ inputs.btp-api-url }}
           BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
           BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          exclude-iflow-ids: ${{ inputs.exclude-iflow-ids }}
           
   output-status:
     needs: [preprocess-ids, attach-zips-only, btp-runtime-delete, btp-pd-delete, btp-designtime-delete, btp-designtime-upload, btp-pd-upload, btp-update-runtime]

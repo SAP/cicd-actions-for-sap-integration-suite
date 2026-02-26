@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
 #
 name: "Update Runtime from Design Time (Deploy / Undeploy)"
 description: "Composite action to deploy or undeploy package artifacts in SAP BTP Integration Suite."
@@ -41,6 +42,10 @@ inputs:
   BTP_TEC_PASSWORD:
     description: "BTP Technical User Password"
     required: true
+  exclude-iflow-ids:
+    description: "Comma-separated list of IFLOW IDs to exclude from deployment"
+    required: false
+    default: ""
     
 runs:
   using: "composite"
@@ -135,6 +140,7 @@ runs:
         file:  ${{ steps.get-iflow-ids.outputs.file }}
         mode: ${{ inputs.mode }}
         target-env: ${{ inputs.target-env }}
+        exclude-iflow-ids: ${{ inputs.exclude-iflow-ids }}
 
     - name: Check DeployTask file exists and contains deploytasks
       id: check-deploytask-file
