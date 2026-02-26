@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
+# 1.0.2 - 2026-02-26 - Remove output of secrets (O.Weng)
 #
 
 name: (Dev) Delete from BTP DEV/TST & GIT
@@ -49,7 +50,7 @@ jobs:
 
   read-env-vars-dev:
     needs: authorize
-    name: Read Environment Variables and Secrets for Development
+    name: Read Environment Variables for Development
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: DEV
     outputs:
@@ -57,18 +58,16 @@ jobs:
       btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
       btp-token-url: ${{ steps.export.outputs.btp-token-url }}
       btp-api-url: ${{ steps.export.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
     steps:
-      - name: Export secrets and vars
+      - name: Export vars
         id: export
         run: |
-          echo "::add-mask::${{ secrets.BTP_API_PASSWORD }}"
-          echo "::add-mask::${{ secrets.BTP_TEC_PASSWORD }}"
-          echo "::add-mask::${{ secrets.GIT_CICD_TOKEN }}"
-        
           echo "btp-api-user=${{ vars.BTP_API_USER }}" >> $GITHUB_OUTPUT
           echo "btp-tec-user=${{ vars.BTP_TEC_USER }}" >> $GITHUB_OUTPUT
           echo "btp-token-url=${{ vars.BTP_TOKEN_URL }}" >> $GITHUB_OUTPUT
           echo "btp-api-url=${{ vars.BTP_API_URL }}" >> $GITHUB_OUTPUT
+          echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
 
   delete-on-dev:
     needs: read-env-vars-dev
@@ -84,7 +83,7 @@ jobs:
       btp-tec-user: ${{ needs.read-env-vars-dev.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars-dev.outputs.btp-token-url }}
       btp-api-url: ${{ needs.read-env-vars-dev.outputs.btp-api-url }}
-      git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}      
+      git-cicd-orgrepo: ${{ needs.read-env-vars-dev.outputs.git-cicd-orgrepo }}     
     secrets:
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
@@ -92,7 +91,7 @@ jobs:
 
   read-env-vars-tst:
     needs: [delete-on-dev]
-    name: Read Environment Variables and Secrets for TST
+    name: Read Environment Variables for Test
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: TST
     outputs:
@@ -100,18 +99,16 @@ jobs:
       btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
       btp-token-url: ${{ steps.export.outputs.btp-token-url }}
       btp-api-url: ${{ steps.export.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
     steps:
-      - name: Export secrets and vars
+      - name: Export vars
         id: export
         run: |
-          echo "::add-mask::${{ secrets.BTP_API_PASSWORD }}"
-          echo "::add-mask::${{ secrets.BTP_TEC_PASSWORD }}"
-          echo "::add-mask::${{ secrets.GIT_CICD_TOKEN }}"
-        
           echo "btp-api-user=${{ vars.BTP_API_USER }}" >> $GITHUB_OUTPUT
           echo "btp-tec-user=${{ vars.BTP_TEC_USER }}" >> $GITHUB_OUTPUT
           echo "btp-token-url=${{ vars.BTP_TOKEN_URL }}" >> $GITHUB_OUTPUT
           echo "btp-api-url=${{ vars.BTP_API_URL }}" >> $GITHUB_OUTPUT
+          echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
 
   delete-on-tst:
     needs: read-env-vars-tst
@@ -127,14 +124,14 @@ jobs:
       btp-tec-user: ${{ needs.read-env-vars-tst.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars-tst.outputs.btp-token-url }}
       btp-api-url: ${{ needs.read-env-vars-tst.outputs.btp-api-url }}
-      git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}      
+      git-cicd-orgrepo: ${{ needs.read-env-vars-tst.outputs.git-cicd-orgrepo }}      
     secrets:
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
 
   delete-from-git:
-      needs: delete-on-tst
+      needs: [delete-on-tst, read-env-vars-tst]
       name: Delete from GIT
       uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/delete-dir-from-git.yml@v1
       with:
@@ -143,7 +140,7 @@ jobs:
         mode: ${{ inputs.mode }}
         source-ref: development
         commit-message: ${{ inputs.commit-message }}
-        git-cicd-orgrepo: ${{ vars.GIT_CICD_ORGREPO }}
+        git-cicd-orgrepo: ${{ needs.read-env-vars-tst.outputs.git-cicd-orgrepo }}
       secrets:
         GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
        
