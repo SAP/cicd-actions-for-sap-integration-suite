@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-01-28 - Changed to actions/upload-artifact@v3 to support also older GHES installations (O. Weng)
+# 1.0.2 - 2026-02-26 - Use v4 for github.com/ghe.com, v3 for GHES (O. Weng)
 #
 name: Prepare ZIP Package from GIT
 description: Prepare ZIP Package from GIT
@@ -104,9 +105,30 @@ runs:
           echo "location=$FINAL_ZIP" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Upload ZIP artifact
+    - name: Detect GitHub Server Type
       if: ${{ inputs.attach-zip == 'true' }}
+      shell: bash
+      run: |
+        echo "🔍 Detecting GitHub server type..."
+        echo "   Server URL: ${{ github.server_url }}"
+        if [[ "${{ github.server_url }}" == *"github.com"* ]] || [[ "${{ github.server_url }}" == *"ghe.com"* ]]; then
+          echo "✅ Detected: GitHub Cloud (github.com or ghe.com)"
+          echo "   → Using upload-artifact@v4"
+        else
+          echo "✅ Detected: GitHub Enterprise Server"
+          echo "   → Using upload-artifact@v3"
+        fi
+
+    - name: Upload ZIP artifact (v4 - GitHub Cloud)
+      if: ${{ inputs.attach-zip == 'true' && (contains(github.server_url, 'github.com') || contains(github.server_url, 'ghe.com')) }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.prepare-zip.outputs.package_dir_name }}
+        path: ${{ steps.prepare-zip.outputs.location }}
+
+    - name: Upload ZIP artifact (v3 - GitHub Enterprise Server)
+      if: ${{ inputs.attach-zip == 'true' && !contains(github.server_url, 'github.com') && !contains(github.server_url, 'ghe.com') }}
       uses: actions/upload-artifact@v3
       with:
         name: ${{ steps.prepare-zip.outputs.package_dir_name }}
-        path: ${{ steps.prepare-zip.outputs.location }}        
+        path: ${{ steps.prepare-zip.outputs.location }}
