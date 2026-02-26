@@ -12,19 +12,20 @@ This is a sophisticated composite orchestration action that manages the complete
 
 ## ⚙️ Inputs
 
-| Name             | Required | Description                                                                |
-|------------------|----------|----------------------------------------------------------------------------|
-| target-env       | ✅ Yes   | Target environment for parameter configuration (e.g., DEV, TST, PRD).     |
-| source-ref       | ✅ Yes   | Git reference to checkout (branch name or tag).                           |
-| package-id       | ✅ Yes   | The package ID to deploy or undeploy.                                     |
-| mode             | ✅ Yes   | Operation mode: `deploy` or `undeploy`.                                   |
-| iflow-deploy     | ❌ No    | Optional: `true` to use JSON configuration file for iFlow deployment, `false` otherwise |
-| btp-api-user     | ✅ Yes   | BTP Service Key Client ID for OAuth authentication.                       |
-| btp-tec-user     | ✅ Yes   | BTP technical user username with Integration Suite permissions.          |
-| btp-token-url    | ✅ Yes   | OAuth token endpoint URL.                                                 |
-| btp-api-url      | ✅ Yes   | Base URL for the SAP BTP Integration Suite APIs.                          |
-| BTP_API_PASSWORD | ✅ Yes   | Client Secret for the API user/service account.                           |
-| BTP_TEC_PASSWORD | ✅ Yes   | Password for the technical user.                                          |
+| Name              | Required | Description                                                                |
+|-------------------|----------|----------------------------------------------------------------------------|
+| target-env        | ✅ Yes   | Target environment for parameter configuration (e.g., DEV, TST, PRD).     |
+| source-ref        | ✅ Yes   | Git reference to checkout (branch name or tag).                           |
+| package-id        | ✅ Yes   | The package ID to deploy or undeploy.                                     |
+| mode              | ✅ Yes   | Operation mode: `deploy` or `undeploy`.                                   |
+| iflow-deploy      | ❌ No    | Optional: `true` to use JSON configuration file for iFlow deployment, `false` otherwise |
+| exclude-iflow-ids | ❌ No    | Comma-separated list of IFLOW IDs to exclude from deployment (default: ""). |
+| btp-api-user      | ✅ Yes   | BTP Service Key Client ID for OAuth authentication.                       |
+| btp-tec-user      | ✅ Yes   | BTP technical user username with Integration Suite permissions.          |
+| btp-token-url     | ✅ Yes   | OAuth token endpoint URL.                                                 |
+| btp-api-url       | ✅ Yes   | Base URL for the SAP BTP Integration Suite APIs.                          |
+| BTP_API_PASSWORD  | ✅ Yes   | Client Secret for the API user/service account.                           |
+| BTP_TEC_PASSWORD  | ✅ Yes   | Password for the technical user.                                          |
 
 ---
 
@@ -43,6 +44,7 @@ jobs:
           package-id: my-package-001
           mode: deploy
           iflow-deploy: 'true'
+          exclude-iflow-ids: 'IFLOW_TO_SKIP_1,IFLOW_TO_SKIP_2'  # Optional: exclude specific IFLOWs
           btp-api-user: ${{ secrets.BTP_API_USER }}
           btp-tec-user: ${{ secrets.BTP_TEC_USER }}
           btp-token-url: ${{ secrets.BTP_TOKEN_URL }}
@@ -281,6 +283,8 @@ This action has no explicit outputs. It orchestrates multiple sub-actions to per
 - **Selective Deployment**: To deploy only certain artifact types:
   - Modify the action locally to skip certain artifact discovery steps
   - Or use the JSON configuration file to exclude iFlows
+
+- **Exclude IFLOW IDs**: Use the `exclude-iflow-ids` parameter to skip specific integration flows from deployment, even if they are marked for deployment in the configuration file. This is useful for temporarily excluding problematic flows during releases. The parameter accepts a comma-separated list of IFLOW IDs (e.g., `"IFLOW_001,IFLOW_002"`).
 
 - **Deployment Sequence**: Artifacts are deployed in the order they appear in the consolidated task file:
   1. All Message Mappings

@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.0.1 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
 #
 
 name: Pass iFlow JSON with IDs to be added for deployment
@@ -23,6 +24,10 @@ inputs:
   target-env:
     description: "Environment, runtime should be updated in (e.g., DEV, TST, PRD, POC)"
     required: true
+  exclude-iflow-ids:
+    description: "Comma-separated list of IFLOW IDs to exclude from deployment"
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -36,10 +41,26 @@ runs:
         PACKAGENAME: ${{ inputs.package-name }}
         FILE: ${{ inputs.file }}
         TARGET_ENV: ${{ inputs.target-env }}
+        EXCLUDE_IFLOW_IDS: ${{ inputs.exclude-iflow-ids }}
       run: |
         set +e  # Do not exit on errors
         
         echo "==== Deployment Configuration for Target Environment: $TARGET_ENV ===="
+        
+        # Parse exclude-iflow-ids into an array
+        IFS=',' read -ra EXCLUDED_IDS <<< "$EXCLUDE_IFLOW_IDS"
+        # Trim whitespace from each ID
+        for i in "${!EXCLUDED_IDS[@]}"; do
+          EXCLUDED_IDS[$i]=$(echo "${EXCLUDED_IDS[$i]}" | xargs)
+        done
+        
+        if [[ ${#EXCLUDED_IDS[@]} -gt 0 && -n "${EXCLUDED_IDS[0]}" ]]; then
+          echo "==== Excluded IFLOW IDs ===="
+          for id in "${EXCLUDED_IDS[@]}"; do
+            echo "  - $id"
+          done
+          echo ""
+        fi
         
         # Find the unique directory matching *~PACKAGEID
         echo "Looking for top-level directories ending in ~$PACKAGEID in root..."
@@ -115,8 +136,20 @@ runs:
             echo "  → No $TARGET_ENV setting found, using Deploy = $deploy_decision"
           fi
           
-          # Add to deployment if decision is "true"
-          if [[ "$deploy_decision" == "true" ]]; then
+          # Check if this IFLOW ID is in the exclusion list
+          is_excluded=false
+          for excluded_id in "${EXCLUDED_IDS[@]}"; do
+            if [[ "$artifact_id" == "$excluded_id" ]]; then
+              is_excluded=true
+              break
+            fi
+          done
+          
+          # Add to deployment if decision is "true" and not excluded
+          if [[ "$is_excluded" == "true" ]]; then
+            skip_count=$((skip_count + 1))
+            echo "  ⊘ Skipped (excluded via exclude-iflow-ids parameter)"
+          elif [[ "$deploy_decision" == "true" ]]; then
             deploy_count=$((deploy_count + 1))
             echo "  ✅ Adding to deployment queue"
             
@@ -140,7 +173,7 @@ runs:
                 end
               )' "$DEPLOY_RESULT" > tmp.json && mv tmp.json "$DEPLOY_RESULT"
             fi
-          else
+          elif [[ "$deploy_decision" != "true" ]]; then
             skip_count=$((skip_count + 1))
             echo "  ⊘ Skipped (not marked for $TARGET_ENV deployment)"
           fi

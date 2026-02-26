@@ -12,13 +12,14 @@ This action manages the deployment and undeployment of integration flows for SAP
 
 ## ⚙️ Inputs
 
-| Name           | Required | Description                                                                    |
-|----------------|----------|--------------------------------------------------------------------------------|
-| package-id     | ✅ Yes   | The package ID for deployment.                                                 |
-| package-name   | ✅ Yes   | The package name for deployment.                                                |
-| file           | ✅ Yes   | Input file containing artifact IDs (used in undeploy mode).                    |
-| mode           | ✅ Yes   | Deployment mode: `deploy` or `undeploy`.                                       |
-| target-env     | ✅ Yes   | Target environment (e.g., `DEV`, `TST`, `PRD`, `POC`).                        |
+| Name              | Required | Description                                                                    |
+|-------------------|----------|--------------------------------------------------------------------------------|
+| package-id        | ✅ Yes   | The package ID for deployment.                                                 |
+| package-name      | ✅ Yes   | The package name for deployment.                                               |
+| file              | ✅ Yes   | Input file containing artifact IDs (used in undeploy mode).                    |
+| mode              | ✅ Yes   | Deployment mode: `deploy` or `undeploy`.                                       |
+| target-env        | ✅ Yes   | Target environment (e.g., `DEV`, `TST`, `PRD`, `POC`).                        |
+| exclude-iflow-ids | ❌ No    | Comma-separated list of IFLOW IDs to exclude from deployment (default: "").   |
 
 ---
 
@@ -40,6 +41,7 @@ jobs:
           file: artifacts/DesigntimeArtifactsIntegrationFlow.json
           mode: deploy
           target-env: DEV
+          exclude-iflow-ids: "IFLOW_TO_SKIP_1,IFLOW_TO_SKIP_2"  # Optional: exclude specific IFLOWs
 
   remove-iflows-deployment:
     runs-on: ubuntu-latest
@@ -94,6 +96,7 @@ jobs:
 - **Environment Variables**: Target environment names are case-sensitive. Use uppercase values (e.g., `DEV`, `TST`, `PRD`, `POC`) to match your configuration file keys.
 - **Undeploy Mode**: Requires the input file to contain artifact IDs under the `.d.results[]` path.
 - **Duplicate Prevention**: The action automatically checks for duplicates before adding. Identical entries are skipped.
+- **Exclude IFLOW IDs**: Use the `exclude-iflow-ids` parameter to skip specific integration flows from deployment, even if they are marked for deployment in the configuration file. This is useful for temporarily excluding problematic flows during releases.
 - **Working Directory**: The action executes in `btp-insuite/IntegrationPackages` directory. Ensure relative paths are adjusted accordingly.
 - **Error Handling**: The action uses `set +e` to continue processing even if individual steps encounter errors. Check the logs for detailed error messages.
 - **Summary Output**: The action provides deployment/undeployment summaries showing total processed and skipped artifacts.
