@@ -5,6 +5,7 @@
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
 # 1.0.2 - 2026-01-28 - Changed to actions/upload-artifact@v3 to support also older GHES installations (O. Weng)
+# 1.0.3 - 2026-02-26 - Use v4 for github.com/ghe.com, v3 for GHES (O. Weng)
 #
 name: Analyze Changes between 2 GIT Ref/Tag
 
@@ -176,7 +177,37 @@ jobs:
           cat "${{ steps.create-pid-csvs.outputs.delete-csv }}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Upload built artifacts
+      - name: Detect GitHub Server Type
+        run: |
+          echo "🔍 Detecting GitHub server type..."
+          echo "   Server URL: ${{ github.server_url }}"
+          if [[ "${{ github.server_url }}" == *"github.com"* ]] || [[ "${{ github.server_url }}" == *"ghe.com"* ]]; then
+            echo "✅ Detected: GitHub Cloud (github.com or ghe.com)"
+            echo "   → Using upload-artifact@v4"
+          else
+            echo "✅ Detected: GitHub Enterprise Server"
+            echo "   → Using upload-artifact@v3"
+          fi
+
+      - name: Upload built artifacts (v4 - GitHub Cloud)
+        if: ${{ contains(github.server_url, 'github.com') || contains(github.server_url, 'ghe.com') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-diff-result.zip
+          path: |
+            ${{ steps.get-compare-packages.outputs.files_changed }}
+            ${{ steps.get-compare-packages.outputs.base_dir_file }}
+            ${{ steps.get-compare-packages.outputs.target_dir_file }}
+            ${{ steps.get-compare-partnerdir.outputs.files_changed }}
+            ${{ steps.get-compare-partnerdir.outputs.base_dir_file }}
+            ${{ steps.get-compare-partnerdir.outputs.target_dir_file }}
+            ${{ steps.create-package-csvs.outputs.upload-csv }}
+            ${{ steps.create-package-csvs.outputs.delete-csv }}
+            ${{ steps.create-pid-csvs.outputs.upload-csv }}
+            ${{ steps.create-pid-csvs.outputs.delete-csv }}
+
+      - name: Upload built artifacts (v3 - GitHub Enterprise Server)
+        if: ${{ !contains(github.server_url, 'github.com') && !contains(github.server_url, 'ghe.com') }}
         uses: actions/upload-artifact@v3
         with:
           name: git-diff-result.zip
