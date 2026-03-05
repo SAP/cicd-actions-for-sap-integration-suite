@@ -124,6 +124,8 @@ This action has no outputs. It performs Git operations directly on the repositor
 
 - **Git User Identity**: The action automatically configures Git with the GitHub workflow actor's username and email. No manual Git configuration is needed.
 
+- **Enterprise Managed Users (EMU)**: The action automatically detects and strips EMU enterprise shortcode suffixes from `github.actor`. If the actor name contains an underscore suffix (e.g., `johndoe_a1b2c3d4`), it resolves to the base username (e.g., `johndoe`) for Git identity configuration. This ensures commits are attributed correctly regardless of EMU configuration.
+
 - **Working Directory**: The action operates in `btp-insuite/IntegrationPackages` directory. Only changes within this directory are staged and committed.
 
 - **Stage All Changes**: The action uses `git add -A` to stage all modifications, new files, and deletions in the working directory.

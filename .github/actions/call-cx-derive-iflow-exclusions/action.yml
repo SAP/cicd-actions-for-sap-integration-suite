@@ -1,0 +1,169 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-03 - Initial release
+# 1.1.0 - 2026-03-04 - Add checkout steps for intsuite and extension repos; add cx-repository, cx-repository-ref, git-cicd-token inputs
+#
+name: 'Call Customer Exit - Derive IFlow Exclusions'
+description: 'Calls the cx-derive-iflow-exclusions customer exit action. Resolves the action location (intsuite repo vs extension repo) using the generic resolve-customer-exit orchestrator, then invokes the customer exit.'
+
+inputs:
+  cx-active:
+    description: 'Whether the customer exit is active (true/false)'
+    required: true
+    default: 'false'
+  intsuite-repo-path:
+    description: 'Path to the checked-out intsuite (current) repository'
+    required: true
+    default: 'intsuite-repo'
+  extension-repo-path:
+    description: 'Path to the checked-out extension repository (may be empty if not configured)'
+    required: false
+    default: 'cx-extension-repo'
+  cx-repository:
+    description: 'Remote extension repository (org/repo). Leave empty if not configured.'
+    required: false
+    default: ''
+  cx-repository-ref:
+    description: 'Git ref for the extension repository'
+    required: false
+    default: 'main'
+  git-cicd-token:
+    description: 'GitHub token for checking out private repositories'
+    required: true
+  btp-tec-password:
+    description: 'BTP technical user password'
+    required: false
+    default: ''
+  btp-api-password:
+    description: 'BTP API password (Service Key client secret)'
+    required: false
+    default: ''
+  target-env:
+    description: 'Target BTP Environment'
+    required: false
+    default: ''
+  base-ref:
+    description: 'GIT Base Reference'
+    required: false
+    default: ''
+  target-ref:
+    description: 'GIT Target Reference'
+    required: false
+    default: ''
+  perform-deploy:
+    description: 'Perform deploy after calculation (true/false)'
+    required: false
+    default: ''
+  btp-api-user:
+    description: 'BTP Service Key (ClientID) to access Token Endpoint'
+    required: false
+    default: ''
+  btp-tec-user:
+    description: 'BTP technical User with Access Policy for Integration Suite'
+    required: false
+    default: ''
+  btp-token-url:
+    description: 'URL on BTP to request Token'
+    required: false
+    default: ''
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: false
+    default: ''
+  git-cicd-orgrepo:
+    description: 'Remote GIT Org/Repo for CICD'
+    required: false
+    default: ''
+
+outputs:
+  exclude-iflow-ids:
+    description: 'Comma-separated list of IFLOW IDs to exclude from deployment'
+    value: ${{ steps.set-output.outputs.exclude-iflow-ids }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout current (intsuite) repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.target-ref }}
+        path: ${{ inputs.intsuite-repo-path }}
+
+    - name: Checkout remote extension repository
+      if: ${{ inputs.cx-repository != '' }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.cx-repository }}
+        ref: ${{ inputs.cx-repository-ref }}
+        path: ${{ inputs.extension-repo-path }}
+        token: ${{ inputs.git-cicd-token }}
+
+    - name: Resolve customer exit location
+      id: resolve
+      uses: ./cicd-btp-insuite/.github/actions/resolve-customer-exit
+      with:
+        cx-active: ${{ inputs.cx-active }}
+        exit-action-name: cx-derive-iflow-exclusions
+        intsuite-repo-path: ${{ inputs.intsuite-repo-path }}
+        extension-repo-path: ${{ inputs.extension-repo-path }}
+
+    - name: Call customer exit (from intsuite repo)
+      if: ${{ steps.resolve.outputs.source == 'intsuite' }}
+      id: exit-intsuite
+      uses: ./intsuite-repo/.github/actions/cx-derive-iflow-exclusions
+      with:
+        target-env: ${{ inputs.target-env }}
+        base-ref: ${{ inputs.base-ref }}
+        target-ref: ${{ inputs.target-ref }}
+        perform-deploy: ${{ inputs.perform-deploy }}
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-tec-password: ${{ inputs.btp-tec-password }}
+        btp-api-password: ${{ inputs.btp-api-password }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        git-cicd-orgrepo: ${{ inputs.git-cicd-orgrepo }}
+        git-cicd-token: ${{ inputs.git-cicd-token }}
+
+    - name: Call customer exit (from extension repo)
+      if: ${{ steps.resolve.outputs.source == 'extension' }}
+      id: exit-extension
+      uses: ./cx-extension-repo/.github/actions/cx-derive-iflow-exclusions
+      with:
+        target-env: ${{ inputs.target-env }}
+        base-ref: ${{ inputs.base-ref }}
+        target-ref: ${{ inputs.target-ref }}
+        perform-deploy: ${{ inputs.perform-deploy }}
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-tec-password: ${{ inputs.btp-tec-password }}
+        btp-api-password: ${{ inputs.btp-api-password }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        git-cicd-orgrepo: ${{ inputs.git-cicd-orgrepo }}
+        git-cicd-token: ${{ inputs.git-cicd-token }}
+
+    - name: Set output
+      id: set-output
+      shell: bash
+      run: |
+        INTSUITE_RESULT="${{ steps.exit-intsuite.outputs.exclude-iflow-ids }}"
+        EXTENSION_RESULT="${{ steps.exit-extension.outputs.exclude-iflow-ids }}"
+
+        if [ -n "$INTSUITE_RESULT" ]; then
+          RESULT="$INTSUITE_RESULT"
+        elif [ -n "$EXTENSION_RESULT" ]; then
+          RESULT="$EXTENSION_RESULT"
+        else
+          RESULT=""
+        fi
+
+        echo "exclude-iflow-ids=$RESULT" >> $GITHUB_OUTPUT
+
+        if [ -n "$RESULT" ]; then
+          echo "✅ Customer exit returned exclude-iflow-ids: $RESULT"
+        else
+          echo "ℹ️  Customer exit returned no IFlow exclusions."
+        fi

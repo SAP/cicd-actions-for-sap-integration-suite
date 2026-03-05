@@ -1,0 +1,105 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-03 - Initial release
+#
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║  CUSTOMER EXIT TEMPLATE - Derive IFlow Exclusions                ║
+# ║                                                                  ║
+# ║  This is a template/placeholder action. Customers should copy    ║
+# ║  this file into their intsuite repository or their extension     ║
+# ║  repository at:                                                  ║
+# ║    .github/actions/cx-derive-iflow-exclusions/action.yml         ║
+# ║                                                                  ║
+# ║  Implement custom logic to derive a comma-separated list of      ║
+# ║  IFlow IDs that should be excluded from deployment.              ║
+# ╚════════════════════════════════════════════════════════════════════╝
+#
+name: 'Customer Exit - Derive IFlow Exclusions'
+description: 'Customer exit to derive a comma-separated list of IFlow IDs to exclude from deployment. Implement your custom logic in this action.'
+
+inputs:
+  target-env:
+    description: 'Target BTP Environment'
+    required: false
+    default: ''
+  base-ref:
+    description: 'GIT Base Reference'
+    required: false
+    default: ''
+  target-ref:
+    description: 'GIT Target Reference'
+    required: false
+    default: ''
+  perform-deploy:
+    description: 'Perform deploy after calculation (true/false)'
+    required: false
+    default: ''
+  btp-api-user:
+    description: 'BTP Service Key (ClientID) to access Token Endpoint'
+    required: false
+    default: ''
+  btp-api-password:
+    description: 'BTP API password (Service Key client secret)'
+    required: false
+    default: ''
+  btp-tec-user:
+    description: 'BTP technical User with Access Policy for Integration Suite'
+    required: false
+    default: ''
+  btp-tec-password:
+    description: 'BTP technical user password'
+    required: false
+    default: ''
+  btp-token-url:
+    description: 'URL on BTP to request Token'
+    required: false
+    default: ''
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: false
+    default: ''
+  git-cicd-orgrepo:
+    description: 'Remote GIT Org/Repo for CICD'
+    required: false
+    default: ''
+  git-cicd-token:
+    description: 'GitHub token for accessing private repositories'
+    required: false
+    default: ''
+
+outputs:
+  exclude-iflow-ids:
+    description: 'Comma-separated list of IFlow IDs to exclude from deployment'
+    value: ${{ steps.derive.outputs.exclude-iflow-ids }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Derive IFlow exclusions
+      id: derive
+      shell: bash
+      run: |
+        echo "════════════════════════════════════════════════════════"
+        echo "🔧 CUSTOMER EXIT - Derive IFlow Exclusions"
+        echo "════════════════════════════════════════════════════════"
+        echo "📍 Target Environment: ${{ inputs.target-env }}"
+        echo "🔀 Base Ref:           ${{ inputs.base-ref }}"
+        echo "🎯 Target Ref:         ${{ inputs.target-ref }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # ┌────────────────────────────────────────────────────────┐
+        # │ TODO: Implement your custom logic here.                │
+        # │                                                        │
+        # │ Set the output to a comma-separated list of IFlow IDs  │
+        # │ that should be excluded from deployment.               │
+        # │                                                        │
+        # │ Example:                                               │
+        # │   echo "exclude-iflow-ids=IFlow1,IFlow2" >> $GITHUB_OUTPUT │
+        # └────────────────────────────────────────────────────────┘
+
+        echo "exclude-iflow-ids=" >> $GITHUB_OUTPUT
+        echo "ℹ️  This is the default template. No IFlow exclusions configured."
+        echo "   Implement your custom logic to derive exclusions."

@@ -85,6 +85,7 @@ jobs:
 - **Team Slug Format**: Use the team slug (URL-safe identifier), not the team display name. For example, use `deployment-team` instead of "Deployment Team".
 - **GitHub Enterprise Support**: The action detects your GitHub server URL and works with GitHub Enterprise instances. The hostname is automatically extracted from the server URL.
 - **Dual Validation Method**: The action uses two approaches to verify membership: direct membership API first, then falls back to checking the team members list. This ensures compatibility with different GitHub configurations.
+- **Enterprise Managed Users (EMU)**: The action automatically detects and resolves EMU usernames. If `github.actor` returns an EMU-suffixed name (e.g., `johndoe_a1b2c3d4`), the action validates the user via API and strips the enterprise shortcode suffix to resolve the actual username. This ensures team membership checks work correctly regardless of EMU configuration.
 - **Access Denied**: If authorization fails, the action exits with code 1, which will stop workflow execution unless explicitly handled. Users receive clear instructions to contact their team administrator.
 - **Conditional Workflows**: Combine this action with the `if` condition on subsequent jobs to create role-based workflow gates.
 - **Logging**: The action provides timestamped, formatted output logs for audit trails and troubleshooting.

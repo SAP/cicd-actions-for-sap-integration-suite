@@ -60,3 +60,15 @@ For each environment, maintain the specific variables & secrets as shown in the 
 | Variable | BTP_TOKEN_URL    | \<URL from service key JSON DEV>                 |
 | Secret   | BTP_API_PASSWORD | \<clientsecret from service key JSON DEV>        |
 | Secret   | BTP_TEC_PASSWORD | \<dev tec user password> (leave empty if not needed) |
+
+### Customer Exit Variables (Optional)
+
+If you want to use [Customer Exits](../usage/customer-exits.md), add the following **environment-specific** variables:
+
+| Type     | Name                | Value                                                        |
+|----------|---------------------|--------------------------------------------------------------|
+| Variable | CX_IFLOW_EXCLUSIONS | `true` or `false` — activates the IFlow exclusions exit      |
+| Variable | CX_REPOSITORY       | \<org/repo> — remote extension repository *(optional)*       |
+| Variable | CX_REPOSITORY_REF   | \<branch or tag> — extension repo ref, defaults to `main` *(optional)* |
+
+> **Note:** These variables are optional. If not set, customer exits are inactive and the standard deployment behavior applies. See the [Customer Exits documentation](../usage/customer-exits.md) for details.

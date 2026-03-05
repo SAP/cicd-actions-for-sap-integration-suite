@@ -23,6 +23,7 @@ This solution enables you to:
 |---------|-------------|
 | [🔧 Setup](setup/README.md) | Installation and configuration instructions |
 | [📘 Usage](usage/README.md) | How to use the workflows and actions |
+| [🔌 Customer Exits](usage/customer-exits.md) | Extend the pipeline with custom logic |
 
 ---
 
