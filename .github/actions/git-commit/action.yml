@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.0.1 - 2026-03-05 - Added EMU (Enterprise Managed User) actor resolution (O. Weng)
 #
 name: GIT Commit
 description: GIT Commit
@@ -24,8 +25,17 @@ runs:
       run: |
         set -e
 
-        git config user.name "${{ github.actor }}"
-        git config user.email "${{ github.actor }}@users.noreply.github.com"
+        # Resolve EMU (Enterprise Managed User) suffix if present
+        # EMU users have format USERNAME_SHORTCODE (e.g., johndoe_a1b2c3d4)
+        ACTOR="${{ github.actor }}"
+        ACTOR_SHORT="${ACTOR%_*}"
+        if [ "$ACTOR_SHORT" != "$ACTOR" ]; then
+          echo "ℹ️  Detected potential EMU suffix, using '$ACTOR_SHORT' instead of '$ACTOR'"
+          ACTOR="$ACTOR_SHORT"
+        fi
+
+        git config user.name "$ACTOR"
+        git config user.email "$ACTOR@users.noreply.github.com"
   
         git add -A
   

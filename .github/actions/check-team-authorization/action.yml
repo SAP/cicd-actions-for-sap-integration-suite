@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-01-26 - Added more logging (O. Weng)
+# 1.0.2 - 2026-03-05 - Added EMU (Enterprise Managed User) actor resolution (O. Weng)
 
 name: 'Check Team Authorization'
 description: 'Verifies if the workflow actor is a member of a specified GitHub team'
@@ -24,7 +25,7 @@ outputs:
     value: ${{ steps.check.outputs.authorized }}
   user:
     description: 'The username that was checked'
-    value: ${{ github.actor }}
+    value: ${{ steps.check.outputs.user }}
   organization:
     description: 'The organization that was checked'
     value: ${{ steps.check.outputs.organization }}
@@ -54,6 +55,26 @@ runs:
         TEAM_SLUG="${{ inputs.team-slug }}"
         ACTOR="${{ github.actor }}"
         
+        # Resolve EMU (Enterprise Managed User) suffix if present
+        # EMU users have format USERNAME_SHORTCODE (e.g., johndoe_a1b2c3d4)
+        # We validate by checking if the full actor name exists as a user
+        user_check=$(gh api --hostname "$GH_HOSTNAME" "/users/$ACTOR" 2>&1)
+        user_check_status=$?
+        if [ $user_check_status -ne 0 ]; then
+          ACTOR_SHORT="${ACTOR%_*}"
+          if [ "$ACTOR_SHORT" != "$ACTOR" ]; then
+            echo "⚠️  User '$ACTOR' not found, trying '$ACTOR_SHORT' (potential EMU suffix stripped)"
+            user_check2=$(gh api --hostname "$GH_HOSTNAME" "/users/$ACTOR_SHORT" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "✅ Resolved actor to '$ACTOR_SHORT'"
+              ACTOR="$ACTOR_SHORT"
+            else
+              echo "⚠️  Neither '${{ github.actor }}' nor '$ACTOR_SHORT' found as users, using original"
+              ACTOR="${{ github.actor }}"
+            fi
+          fi
+        fi
+        
         echo "════════════════════════════════════════════════════════"
         echo "🔐 AUTHORIZATION CHECK"
         echo "════════════════════════════════════════════════════════"
@@ -65,8 +86,9 @@ runs:
         echo "════════════════════════════════════════════════════════"
         echo ""
         
-        # Save organization to output
+        # Save outputs
         echo "organization=$ORG" >> $GITHUB_OUTPUT
+        echo "user=$ACTOR" >> $GITHUB_OUTPUT
         
         # Verify token is available
         if [ -z "$GH_TOKEN" ]; then

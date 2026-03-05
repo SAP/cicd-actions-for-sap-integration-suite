@@ -125,6 +125,13 @@ Manages release import and optional deployment between Git references and BTP en
 - `BTP_API_URL` - BTP API base URL
 - `GIT_CICD_ORGREPO` - Git organization/repository reference
 
+**Optional Variables (Customer Exits):**
+- `CX_IFLOW_EXCLUSIONS` - Activates the IFlow exclusions customer exit (`true`/`false`)
+- `CX_REPOSITORY` - Remote extension repository for customer exit implementations (`org/repo` format)
+- `CX_REPOSITORY_REF` - Branch or tag of the extension repository (defaults to `main`)
+
+For more details on customer exits, see the [Customer Exits documentation](../documentation/usage/customer-exits.md).
+
 **Required Secrets:**
 - `GIT_ORG_TOKEN` - GitHub organization token
 - `BTP_API_PASSWORD` - BTP API password

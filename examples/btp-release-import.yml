@@ -5,6 +5,7 @@
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 # 1.0.2 - 2026-02-26 - Remove output of secrets (O.Weng)
+# 1.1.0 - 2026-03-04 - Merge authorize & read-env-vars into initialize job; move checkout steps into call-cx-derive-iflow-exclusions action (O.Weng)
 #
 
 name: (Admin) BTP Release Manager
@@ -40,22 +41,10 @@ permissions:
   contents: write
 
 jobs:
-  authorize:
-    name: Authorization Check
+  initialize:
+    name: Authorize & Read Environment Variables for ${{ inputs.target-env }}
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
-    steps:     
-      - name: Check team authorization
-        uses: SAP/cicd-actions-for-sap-integration-suite/.github/actions/check-team-authorization@v1
-        with:
-          team-slug: ${{ vars.BTP_ADMIN_TEAM_SLUG }}
-          github-token: ${{ secrets.GIT_ORG_TOKEN }}
-
-  read-env-vars:
-    needs: authorize
-    name: Read Environment Variables for ${{ inputs.target-env }}
-    environment: ${{ inputs.target-env }}
-    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     outputs:
       btp-api-user: ${{ steps.export.outputs.btp-api-user }}
       btp-tec-user: ${{ steps.export.outputs.btp-tec-user }}
@@ -63,6 +52,20 @@ jobs:
       btp-api-url: ${{ steps.export.outputs.btp-api-url }}
       git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
     steps:
+      - name: Checkout cicd-actions repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          ref: v1
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      - name: Check team authorization
+        uses: ./cicd-btp-insuite/.github/actions/check-team-authorization
+        with:
+          team-slug: ${{ vars.BTP_ADMIN_TEAM_SLUG }}
+          github-token: ${{ secrets.GIT_ORG_TOKEN }}
+
       - name: Export vars
         id: export
         run: |
@@ -73,27 +76,66 @@ jobs:
           echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
         
   analyze-changes:
-    needs: [read-env-vars]
+    needs: [initialize]
     name: Analyze Changes
     uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/analyze-changes.yml@v1
     with:
-      workflow-ref: v1		
+      workflow-ref: v1
       target-env: ${{ github.event.inputs.target-env }}
       base-ref: ${{ github.event.inputs.base-ref }}
       target-ref: ${{ github.event.inputs.target-ref }}
       perform-deploy: ${{ github.event.inputs.perform-deploy }}
-      btp-api-user: ${{ needs.read-env-vars.outputs.btp-api-user }}
-      btp-tec-user: ${{ needs.read-env-vars.outputs.btp-tec-user }}
-      btp-token-url: ${{ needs.read-env-vars.outputs.btp-token-url }}
-      btp-api-url: ${{ needs.read-env-vars.outputs.btp-api-url }}
-      git-cicd-orgrepo: ${{ needs.read-env-vars.outputs.git-cicd-orgrepo }}   
+      btp-api-user: ${{ needs.initialize.outputs.btp-api-user }}
+      btp-tec-user: ${{ needs.initialize.outputs.btp-tec-user }}
+      btp-token-url: ${{ needs.initialize.outputs.btp-token-url }}
+      btp-api-url: ${{ needs.initialize.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }}   
     secrets:
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
       GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
 
+  customer-exit-iflow-exclusions:
+    needs: [initialize, analyze-changes]
+    name: Customer Exit - Derive IFlow Exclusions
+    if: ${{ github.event.inputs.perform-deploy == 'true' }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    environment: ${{ inputs.target-env }}
+    outputs:
+      exclude-iflow-ids: ${{ steps.call-exit.outputs.exclude-iflow-ids }}
+    steps:
+      - name: Checkout cicd-actions repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.initialize.outputs.git-cicd-orgrepo }}
+          ref: v1
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      - name: Call Customer Exit - Derive IFlow Exclusions
+        id: call-exit
+        uses: ./cicd-btp-insuite/.github/actions/call-cx-derive-iflow-exclusions
+        with:
+          cx-active: ${{ vars.CX_IFLOW_EXCLUSIONS }}
+          intsuite-repo-path: intsuite-repo
+          extension-repo-path: cx-extension-repo
+          cx-repository: ${{ vars.CX_REPOSITORY }}
+          cx-repository-ref: ${{ vars.CX_REPOSITORY_REF || 'main' }}
+          git-cicd-token: ${{ secrets.GIT_CICD_TOKEN }}
+          btp-tec-password: ${{ secrets.BTP_TEC_PASSWORD }}
+          btp-api-password: ${{ secrets.BTP_API_PASSWORD }}
+          target-env: ${{ github.event.inputs.target-env }}
+          base-ref: ${{ github.event.inputs.base-ref }}
+          target-ref: ${{ github.event.inputs.target-ref }}
+          perform-deploy: ${{ github.event.inputs.perform-deploy }}
+          btp-api-user: ${{ needs.initialize.outputs.btp-api-user }}
+          btp-tec-user: ${{ needs.initialize.outputs.btp-tec-user }}
+          btp-token-url: ${{ needs.initialize.outputs.btp-token-url }}
+          btp-api-url: ${{ needs.initialize.outputs.btp-api-url }}
+          git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }}
+
   btp-execute-deployment:
-    needs: [read-env-vars, analyze-changes]
+    needs: [initialize, analyze-changes, customer-exit-iflow-exclusions]
     name: Execute Deployment
     if: ${{ github.event.inputs.perform-deploy == 'true' }}
     uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/delete-upload.yml@v1
@@ -105,11 +147,12 @@ jobs:
       integrationpackages-delete-ids: ${{ needs.analyze-changes.outputs.package_delete_csv_content }}
       partnerdirectory-upload-ids: ${{ needs.analyze-changes.outputs.pid_upload_csv_content }}
       partnerdirectory-delete-ids: ${{ needs.analyze-changes.outputs.pid_delete_csv_content }}
-      btp-api-user: ${{ needs.read-env-vars.outputs.btp-api-user }}
-      btp-tec-user: ${{ needs.read-env-vars.outputs.btp-tec-user }}
-      btp-token-url: ${{ needs.read-env-vars.outputs.btp-token-url }}
-      btp-api-url: ${{ needs.read-env-vars.outputs.btp-api-url }}
-      git-cicd-orgrepo: ${{ needs.read-env-vars.outputs.git-cicd-orgrepo }} 
+      exclude-iflow-ids: ${{ needs.customer-exit-iflow-exclusions.outputs.exclude-iflow-ids }}
+      btp-api-user: ${{ needs.initialize.outputs.btp-api-user }}
+      btp-tec-user: ${{ needs.initialize.outputs.btp-tec-user }}
+      btp-token-url: ${{ needs.initialize.outputs.btp-token-url }}
+      btp-api-url: ${{ needs.initialize.outputs.btp-api-url }}
+      git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }} 
     secrets:
       BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
       BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}

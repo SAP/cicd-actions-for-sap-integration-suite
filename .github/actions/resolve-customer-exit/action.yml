@@ -1,0 +1,91 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-03 - Initial release
+#
+name: 'Resolve Customer Exit'
+description: 'Generic orchestrator that checks if a customer exit is active and resolves its location (intsuite repo vs extension repo). Intsuite repo takes precedence.'
+
+inputs:
+  cx-active:
+    description: 'Whether the customer exit is active (true/false)'
+    required: true
+    default: 'false'
+  exit-action-name:
+    description: 'The action directory name to look for (e.g., cx-derive-iflow-exclusions)'
+    required: true
+  intsuite-repo-path:
+    description: 'Path to the checked-out intsuite (current) repository'
+    required: true
+  extension-repo-path:
+    description: 'Path to the checked-out extension repository (may not exist if not configured)'
+    required: false
+    default: ''
+
+outputs:
+  active:
+    description: 'Whether the customer exit is active (true/false)'
+    value: ${{ steps.resolve.outputs.active }}
+  source:
+    description: 'Where the customer exit action was found: intsuite, extension, or none'
+    value: ${{ steps.resolve.outputs.source }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve customer exit location
+      id: resolve
+      shell: bash
+      run: |
+        EXIT_ACTION="${{ inputs.exit-action-name }}"
+        CX_ACTIVE="${{ inputs.cx-active }}"
+        INTSUITE_PATH="${{ inputs.intsuite-repo-path }}"
+        EXTENSION_PATH="${{ inputs.extension-repo-path }}"
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🔍 RESOLVE CUSTOMER EXIT"
+        echo "════════════════════════════════════════════════════════"
+        echo "📦 Exit Action: $EXIT_ACTION"
+        echo "🔘 CX Active:   $CX_ACTIVE"
+        echo "════════════════════════════════════════════════════════"
+
+        # Check if customer exit is active
+        if [ "$CX_ACTIVE" != "true" ]; then
+          echo ""
+          echo "⏭️  Customer exit '$EXIT_ACTION' is not active. Skipping."
+          echo "active=false" >> $GITHUB_OUTPUT
+          echo "source=none" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        echo "active=true" >> $GITHUB_OUTPUT
+
+        # Check intsuite (current) repository first — it takes precedence
+        INTSUITE_ACTION_PATH="$INTSUITE_PATH/.github/actions/$EXIT_ACTION/action.yml"
+        EXTENSION_ACTION_PATH="$EXTENSION_PATH/.github/actions/$EXIT_ACTION/action.yml"
+
+        if [ -f "$INTSUITE_ACTION_PATH" ]; then
+          echo ""
+          echo "✅ Found '$EXIT_ACTION' in intsuite (current) repository"
+          echo "   Path: $INTSUITE_ACTION_PATH"
+          echo "source=intsuite" >> $GITHUB_OUTPUT
+        elif [ -n "$EXTENSION_PATH" ] && [ -f "$EXTENSION_ACTION_PATH" ]; then
+          echo ""
+          echo "✅ Found '$EXIT_ACTION' in remote extension repository"
+          echo "   Path: $EXTENSION_ACTION_PATH"
+          echo "source=extension" >> $GITHUB_OUTPUT
+        else
+          echo ""
+          echo "⚠️  WARNING: Customer exit '$EXIT_ACTION' is active but action was not found in any repository."
+          if [ -n "$INTSUITE_PATH" ]; then
+            echo "   Checked: $INTSUITE_ACTION_PATH"
+          fi
+          if [ -n "$EXTENSION_PATH" ]; then
+            echo "   Checked: $EXTENSION_ACTION_PATH"
+          fi
+          echo "source=none" >> $GITHUB_OUTPUT
+        fi
+
+        echo ""
+        echo "════════════════════════════════════════════════════════"
