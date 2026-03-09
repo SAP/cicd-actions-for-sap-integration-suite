@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.1.0 - 2026-03-05 - Add Rank, LogLevel, Runtimes defaults for new and existing entries (O.Weng)
 #
 
 name: Create IFlow Deployment File and merges existing
@@ -99,18 +100,27 @@ runs:
             echo "  → Preserved existing entry with all settings"
             
             # Update the name in case it changed, keep all other fields, 
-            # and ensure Deploy field exists (create with default if missing)
-            IFLOW_ENTRY=$(echo "$EXISTING_ENTRY" | jq --arg name "$NAME" '.ArtifactName = $name | .Deploy //= "false"')
+            # and ensure Deploy, Rank, LogLevel, Runtimes fields exist (create with defaults if missing)
+            IFLOW_ENTRY=$(echo "$EXISTING_ENTRY" | jq --arg name "$NAME" '
+              .ArtifactName = $name | 
+              .Deploy //= "false" | 
+              .Rank //= "100" | 
+              .LogLevel //= "INFO" | 
+              .Runtimes //= "iflmap"
+            ')
           else
-            # New entry - create with Deploy = false (no stage flags initially)
+            # New entry - create with defaults (no stage flags initially)
             NEW_COUNT=$((NEW_COUNT + 1))
-            echo "  → New entry: Deploy = false (default)"
+            echo "  → New entry: Deploy = false, Rank = 100, LogLevel = INFO, Runtimes = iflmap (defaults)"
             
             IFLOW_ENTRY=$(jq -n --arg id "$ID" --arg name "$NAME" '
               {
                 "ArtifactID": $id,
                 "ArtifactName": $name,
-                "Deploy": "false"
+                "Deploy": "false",
+                "Rank": "100",
+                "LogLevel": "INFO",
+                "Runtimes": "iflmap"
               }
             ')
           fi

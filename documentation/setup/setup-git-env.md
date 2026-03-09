@@ -29,9 +29,11 @@ Maintain the following variables and secrets:
 | Variable | BTP_ADMIN_TEAM_SLUG | cicd_release_manager                  |
 | Variable | BTP_DEV_TEAM_SLUG   | cicd_developer                        |
 | Variable | GIT_CICD_ORGREPO    | \<yourorg>/\<cicd-actions>            |
-| Variable | RUNS_ON             | \<runners version e.g. ubuntu-latest> |
+| Variable | RUNS_ON             | JSON string of the runner, e.g. `"ubuntu-latest"` or `["self-hosted", "linux"]` |
 | Secret   | GIT_CICD_TOKEN      | \<insertyourtoken>                    |
 | Secret   | GIT_ORG_TOKEN       | \<insertyourtoken>                    |
+
+> **Important:** The `RUNS_ON` value must be a valid **JSON** string. Use double quotes for a single runner (e.g. `"ubuntu-latest"`) or a JSON array for multiple labels (e.g. `["self-hosted", "linux"]`). A plain string without quotes (e.g. `ubuntu-latest`) will cause a workflow error.
 
 
 ## Repository Global Variables & Secrets

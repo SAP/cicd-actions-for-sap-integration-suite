@@ -115,7 +115,7 @@ jobs:
       target-env: TST
       source-ref: development
       integrationpackages-upload-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.id || '' }}
-      partnerdirectory-upload-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id|| '' }}
+      partnerdirectory-upload-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id || '' }}
       btp-api-user: ${{ needs.read-env-vars-tst.outputs.btp-api-user }}
       btp-tec-user: ${{ needs.read-env-vars-tst.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars-tst.outputs.btp-token-url }}

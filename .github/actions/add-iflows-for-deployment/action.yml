@@ -4,6 +4,9 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
+# 1.1.0 - 2026-03-05 - Support enhanced Environments override format for Deploy (O. Weng)
+# 1.2.0 - 2026-03-06 - Add LogLevel and Runtimes to deploytask entries with environment override resolution (O. Weng)
+# 1.2.1 - 2026-03-06 - Display sorted iFlow list with ID, Name, effective Rank, Rank source, and sort method (O. Weng)
 #
 
 name: Pass iFlow JSON with IDs to be added for deployment
@@ -99,11 +102,44 @@ runs:
           exit 0
         fi
 
-        # Sort integration flows: flows without Rank first (alphabetically), then flows with Rank
+        # Sort integration flows by Rank (package-global setting, not overridable per environment)
+        # Priority: top-level Rank > -1 (unranked)
+        # Unranked flows first (alphabetically), then ranked flows (by Rank, then alphabetically)
         echo ""
-        echo "==== Sorting Integration Flows ===="
-        jq '.PackageIntegrationFlowDeployments.IntegrationFlows |= sort_by(has("Rank"), (.Rank // -1 | tonumber), .ArtifactName)' "$DEPLOYMENT_FILE" > "${DEPLOYMENT_FILE}.tmp" && mv "${DEPLOYMENT_FILE}.tmp" "$DEPLOYMENT_FILE"
-        echo "✅ Integration flows sorted: unranked flows first (alphabetically), then ranked flows (by Rank)"		
+        echo "==== Sorting Integration Flows by Rank ===="
+        jq '.PackageIntegrationFlowDeployments.IntegrationFlows |= sort_by(
+          has("Rank"),
+          ((.Rank // -1) | tonumber),
+          .ArtifactName
+        )' "$DEPLOYMENT_FILE" > "${DEPLOYMENT_FILE}.tmp" && mv "${DEPLOYMENT_FILE}.tmp" "$DEPLOYMENT_FILE"
+        echo "✅ Integration flows sorted: unranked flows first (alphabetically), then ranked flows (by Rank)"
+        
+        # Display sorted list with rank details
+        echo ""
+        echo "  #  | ID                                       | Name                                     | Eff.Rank | Rank Source          | Sort"
+        echo "  ---|------------------------------------------|------------------------------------------|----------|----------------------|-------------"
+        sort_index=0
+        while IFS= read -r iflow_entry; do
+          sort_index=$((sort_index + 1))
+          s_id=$(echo "$iflow_entry" | jq -r '.ArtifactID')
+          s_name=$(echo "$iflow_entry" | jq -r '.ArtifactName')
+          
+          # Determine rank and its source (Rank is package-global, not overridable per environment)
+          top_rank=$(echo "$iflow_entry" | jq -r '.Rank // "not_found"')
+          
+          if [[ "$top_rank" != "not_found" ]]; then
+            eff_rank="$top_rank"
+            rank_source="top-level"
+            sort_method="by rank"
+          else
+            eff_rank="-"
+            rank_source="not present"
+            sort_method="alphabetical"
+          fi
+          
+          printf "  %-3s| %-40s | %-40s | %8s | %-20s | %s\n" "$sort_index" "$s_id" "$s_name" "$eff_rank" "$rank_source" "$sort_method"
+        done < <(jq -c '.PackageIntegrationFlowDeployments.IntegrationFlows[]' "$DEPLOYMENT_FILE")
+        echo ""
         
         # Set output file path
         DEPLOY_RESULT="${{ runner.temp }}/DeployTask.${PACKAGEID}"
@@ -120,21 +156,45 @@ runs:
           artifact_id=$(echo "$iflow_entry" | jq -r '.ArtifactID')
           artifact_name=$(echo "$iflow_entry" | jq -r '.ArtifactName')
           
-          # Check if stage-specific key exists for target environment
+          # Determine deployment decision using priority chain:
+          # 1. Environments[$TARGET_ENV].Deploy (enhanced format - highest priority)
+          # 2. $TARGET_ENV flat key (old format - backward compatibility)
+          # 3. Deploy (default fallback)
+          env_override=$(echo "$iflow_entry" | jq -r --arg env "$TARGET_ENV" '.Environments[$env].Deploy // "not_found"')
           stage_value=$(echo "$iflow_entry" | jq -r --arg env "$TARGET_ENV" '.[$env] // "not_found"')
           
-          # Determine deployment decision
-          if [[ "$stage_value" != "not_found" ]]; then
-            # Stage-specific value exists - use it
+          echo "[$artifact_id] $artifact_name"
+          if [[ "$env_override" != "not_found" ]]; then
+            # Enhanced format: Environments block override
+            deploy_decision="$env_override"
+            echo "  → Environment override found: Environments.$TARGET_ENV.Deploy = $deploy_decision"
+          elif [[ "$stage_value" != "not_found" ]]; then
+            # Old flat format: stage-specific key (backward compatibility)
             deploy_decision="$stage_value"
-            echo "[$artifact_id] $artifact_name"
-            echo "  → Stage-specific setting found: $TARGET_ENV = $deploy_decision"
+            echo "  → Stage-specific setting found (legacy): $TARGET_ENV = $deploy_decision"
           else
-            # No stage-specific value - fall back to Deploy key
+            # Default fallback
             deploy_decision=$(echo "$iflow_entry" | jq -r '.Deploy // "false"')
-            echo "[$artifact_id] $artifact_name"
             echo "  → No $TARGET_ENV setting found, using Deploy = $deploy_decision"
           fi
+          
+          # Resolve effective LogLevel using priority chain:
+          # 1. Environments[$TARGET_ENV].LogLevel (enhanced format)
+          # 2. Top-level LogLevel
+          # 3. Default: "INFO"
+          effective_loglevel=$(echo "$iflow_entry" | jq -r --arg env "$TARGET_ENV" '
+            .Environments[$env].LogLevel // .LogLevel // "INFO"
+          ')
+          
+          # Resolve effective Runtimes using priority chain:
+          # 1. Environments[$TARGET_ENV].Runtimes (enhanced format)
+          # 2. Top-level Runtimes
+          # 3. Default: "iflmap"
+          effective_runtimes=$(echo "$iflow_entry" | jq -r --arg env "$TARGET_ENV" '
+            .Environments[$env].Runtimes // .Runtimes // "iflmap"
+          ')
+          
+          echo "  → Effective LogLevel: $effective_loglevel, Runtimes: $effective_runtimes"
           
           # Check if this IFLOW ID is in the exclusion list
           is_excluded=false
@@ -160,16 +220,19 @@ runs:
               --arg name "$artifact_name" \
               --arg type "Integration" \
               --arg action "${{ inputs.mode }}" \
+              --arg loglevel "$effective_loglevel" \
+              --arg runtimes "$effective_runtimes" \
               --arg packageid "$PACKAGEID" \
               --arg packagename "$PACKAGENAME" \
-              '{d: {deploytasks: [{id: $id, name: $name, type: $type, action: $action}], packageid: $packageid, packagename: $packagename}}' > "$DEPLOY_RESULT"
+              '{d: {deploytasks: [{id: $id, name: $name, type: $type, action: $action, loglevel: $loglevel, runtimes: $runtimes}], packageid: $packageid, packagename: $packagename}}' > "$DEPLOY_RESULT"
             else
               # Add new entry if it doesn't already exist
               jq --arg id "$artifact_id" --arg name "$artifact_name" --arg type "Integration" --arg action "${{ inputs.mode }}" \
+              --arg loglevel "$effective_loglevel" --arg runtimes "$effective_runtimes" \
               '.d.deploytasks += (
                 if (.d.deploytasks // [] | any(.id == $id and .name == $name and .type == $type and .action == $action)) 
                   then []
-                else [{"id": $id, "name": $name, "type": $type, "action": $action}] 
+                else [{"id": $id, "name": $name, "type": $type, "action": $action, "loglevel": $loglevel, "runtimes": $runtimes}] 
                 end
               )' "$DEPLOY_RESULT" > tmp.json && mv tmp.json "$DEPLOY_RESULT"
             fi

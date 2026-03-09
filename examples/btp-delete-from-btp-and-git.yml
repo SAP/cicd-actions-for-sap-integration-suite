@@ -78,7 +78,7 @@ jobs:
       target-env: DEV
       source-ref: development
       integrationpackages-delete-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.id || '' }}
-      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id|| '' }}
+      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id || '' }}
       btp-api-user: ${{ needs.read-env-vars-dev.outputs.btp-api-user }}
       btp-tec-user: ${{ needs.read-env-vars-dev.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars-dev.outputs.btp-token-url }}
@@ -119,7 +119,7 @@ jobs:
       target-env: TST
       source-ref: development
       integrationpackages-delete-ids: ${{ github.event.inputs.mode == 'IntegrationPackages' && github.event.inputs.id || '' }}
-      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id|| '' }}
+      partnerdirectory-delete-ids: ${{ github.event.inputs.mode == 'PartnerDirectory' && github.event.inputs.id || '' }}
       btp-api-user: ${{ needs.read-env-vars-tst.outputs.btp-api-user }}
       btp-tec-user: ${{ needs.read-env-vars-tst.outputs.btp-tec-user }}
       btp-token-url: ${{ needs.read-env-vars-tst.outputs.btp-token-url }}
