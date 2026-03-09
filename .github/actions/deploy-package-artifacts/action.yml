@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 1.1.0 - 2026-03-06 - Read and log LogLevel and Runtimes from enhanced deploytask entries (F. Spruenken)
 #
 name: Deploy/Undeploy Package Artifacts
 
@@ -73,7 +74,18 @@ runs:
         echo "$ids" | jq -c '.[]' | while read -r row; do
           id=$(echo "$row" | jq -r '.id')
           type=$(echo "$row" | jq -r '.type')
-          echo "Processing $id of type $type with action $ACTION..."
+          loglevel=$(echo "$row" | jq -r '.loglevel // empty')
+          runtimes=$(echo "$row" | jq -r '.runtimes // empty')
+          
+          # Build info string with optional loglevel/runtimes
+          info_extra=""
+          if [ -n "$loglevel" ]; then
+            info_extra=" | LogLevel: $loglevel"
+          fi
+          if [ -n "$runtimes" ]; then
+            info_extra="$info_extra | Runtimes: $runtimes"
+          fi
+          echo "Processing $id of type $type with action $ACTION${info_extra}..."
 
           if [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" = "undeploy" ]; then
             echo "♻️ Performing undeployment for $id of type $type using API $BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$id')"

@@ -6,7 +6,7 @@ Create and merge integration flow deployment configuration files for SAP BTP Int
 
 ## ✨ Overview
 
-This action creates or updates a deployment configuration file for integration flows within a package directory structure. It reads a JSON file containing integration flow IDs from BTP APIs, intelligently merges with existing deployment configurations to preserve stage-specific settings, and generates a structured `Deployment_INTEGRATION_FLOW.json` file. New iFlows default to `Deploy: false`, requiring explicit configuration before deployment, while existing entries retain all their original settings and stage flags.
+This action creates or updates a deployment configuration file for integration flows within a package directory structure. It reads a JSON file containing integration flow IDs from BTP APIs, intelligently merges with existing deployment configurations to preserve stage-specific settings, and generates a structured `Deployment_INTEGRATION_FLOW.json` file. New iFlows are created with sensible defaults (`Deploy: false`, `Rank: 100`, `LogLevel: INFO`, `Runtimes: iflmap`), requiring explicit configuration before deployment. Existing entries retain all their original settings and stage flags, while missing fields are backfilled with defaults.
 
 ---
 
@@ -67,7 +67,7 @@ jobs:
 |------|------------------------------------------------|
 | path | Path to the generated `Deployment_INTEGRATION_FLOW.json` file |
 
-**Output File Structure:**
+**Output File Structure (defaults created by this action):**
 ```json
 {
   "PackageIntegrationFlowDeployments": {
@@ -78,26 +78,53 @@ jobs:
         "ArtifactID": "iflow-id-123",
         "ArtifactName": "My Integration Flow",
         "Deploy": "false",
-        "DEV": "true",
-        "TST": "false",
-        "PRD": "false"
+        "Rank": "100",
+        "LogLevel": "INFO",
+        "Runtimes": "iflmap"
       }
     ]
   }
 }
 ```
 
+**Enhanced Format (manually configured after initial creation):**
+
+The deployment file supports an optional `Environments` block per iFlow for environment-specific overrides. Top-level fields serve as **defaults**, while values inside `Environments` **override** them for the target environment:
+
+```json
+{
+  "ArtifactID": "iflow-id-123",
+  "ArtifactName": "My Integration Flow",
+  "Deploy": "true",
+  "Rank": "100",
+  "LogLevel": "INFO",
+  "Runtimes": "iflmap",
+  "Environments": {
+    "DEV": { "Deploy": "true", "LogLevel": "DEBUG", "Runtimes": "iflmap" },
+    "TST": { "Deploy": "true", "LogLevel": "INFO", "Runtimes": "iflmap" },
+    "PRD": { "Deploy": "false", "LogLevel": "ERROR", "Runtimes": "iflmap" }
+  }
+}
+```
+
+> **Note:** This action only creates the default top-level fields. The `Environments` sub-structures must be added manually after initial creation. The old flat-key format (e.g., `"DEV": "true"`) is still supported for backward compatibility.
+
 ---
 
 ## 💡 Tips & Troubleshooting
 
 - **Merge Logic**: The action intelligently preserves existing deployment entries. If an iFlow already exists in the deployment file, all its settings (including stage-specific flags like DEV, TST, PRD) are retained. Only the `ArtifactName` is updated if it changed in the source.
-- **New Entries Default**: New iFlows are created with `Deploy: "false"` by default. This prevents accidental deployments. Edit the deployment file to set `Deploy: "true"` and configure stage-specific flags as needed.
+- **New Entries Default**: New iFlows are created with the following defaults: `Deploy: "false"`, `Rank: "100"`, `LogLevel: "INFO"`, `Runtimes: "iflmap"`. This prevents accidental deployments. Edit the deployment file to adjust these values and configure stage-specific flags as needed.
+- **Rank**: Controls the deployment order of integration flows. Flows are sorted by rank (lower values deploy first). Unranked flows are deployed before ranked ones.
+- **LogLevel**: Sets the default log level for the integration flow (e.g., `INFO`, `DEBUG`, `ERROR`, `TRACE`).
+- **Runtimes**: Specifies the runtime environment for the integration flow (default: `iflmap`).
 - **Directory Structure**: The action creates the directory structure `{PackageName}~{PackageID}/Configuration/` in the `btp-insuite/IntegrationPackages` directory. Ensure this path exists or the action will create it.
 - **Bearer Token**: The bearer token must have sufficient permissions to query BTP Integration Suite APIs. Typically stored as a GitHub secret.
 - **Input File Format**: The input file must contain iFlows data in the BTP API response format with `d.results[]` array containing objects with `Id` and `Name` fields.
 - **Idempotent Operation**: Running this action multiple times with the same input is safe—existing entries are preserved unchanged, and only new iFlows are added.
-- **Stage Flags**: If you need environment-specific deployments (DEV, TST, PRD, etc.), manually add these keys to the JSON after initial creation. They will be preserved on subsequent runs.
+- **Backfill Logic**: Existing entries from older deployment files that lack `Rank`, `LogLevel`, or `Runtimes` fields will automatically have these fields added with their default values on the next run, without overwriting any existing values.
+- **Stage Flags (Legacy)**: The old flat-key format (e.g., `"DEV": "true"`) is still supported for backward compatibility and will be preserved on subsequent runs.
+- **Environments Block (Enhanced)**: For fine-grained per-environment control of Deploy, LogLevel, and Runtimes, manually add an `Environments` sub-object to each iFlow entry. Note that `Rank` is a package-global setting and cannot be overridden per environment. This block is not created automatically — it must be configured manually. Existing `Environments` blocks are preserved on subsequent runs.
 - **Working Directory**: This action runs in the `btp-insuite/IntegrationPackages` directory. Ensure your repository structure matches this path.
 - **Processing Summary**: The action logs processing statistics showing total iFlows processed, preserved entries, and new entries with defaults for audit purposes.
 
