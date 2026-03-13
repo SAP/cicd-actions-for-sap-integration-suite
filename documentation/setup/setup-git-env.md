@@ -38,7 +38,13 @@ Maintain the following variables and secrets:
 
 ## Repository Global Variables & Secrets
 
-Currently no repository global variables or secrets required.
+Maintain the following secrets at the **repository level** (in your `cicd-intsuite` repository under Settings → Secrets and variables → Actions):
+
+| Type   | Name            | Value              |
+|--------|-----------------|--------------------|
+| Secret | GIT_SUITE_TOKEN | \<insertyourtoken> |
+
+> **Note:** `GIT_SUITE_TOKEN` is a fine-grained personal access token scoped to the `cicd-intsuite` repository with `contents:write` and `pull-requests:write` permissions. It is used by the **create-release** workflow for branch management, PR creation/merge, and release tagging operations.
 
 ## Environment Specific Variables & Secrets
 

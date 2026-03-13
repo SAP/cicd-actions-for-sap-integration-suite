@@ -79,7 +79,7 @@ jobs:
         "name": "My Integration Flow",
         "type": "Integration",
         "action": "deploy",
-        "loglevel": "DEBUG",
+        "loglevel": "INFO",
         "runtimes": "iflmap"
       },
       {
@@ -116,13 +116,13 @@ jobs:
     "LogLevel": "INFO",
     "Runtimes": "iflmap",
     "Environments": {
-      "DEV": { "Deploy": "true", "LogLevel": "DEBUG" },
+      "DEV": { "Deploy": "true", "LogLevel": "INFO" },
       "TST": { "Deploy": "true" },
       "PRD": { "Deploy": "false", "LogLevel": "ERROR" }
     }
   }
   ```
-  In this example, deploying to `DEV` uses `Deploy=true` with `Rank=100` (from top level) and `LogLevel=DEBUG`, while `PRD` uses `Deploy=false` and would be skipped. Note that `Rank` is only defined at the top level and applies globally across all environments.
+  In this example, deploying to `DEV` uses `Deploy=true` with `Rank=100` (from top level) and `LogLevel=INFO`, while `PRD` uses `Deploy=false` and would be skipped. Note that `Rank` is only defined at the top level and applies globally across all environments.
 - **LogLevel & Runtimes Resolution**: The effective `LogLevel` and `Runtimes` for each iFlow are resolved using the same priority chain: `Environments[$TARGET_ENV].LogLevel` → top-level `LogLevel` → `"INFO"` (and `Environments[$TARGET_ENV].Runtimes` → top-level `Runtimes` → `"iflmap"`). These values are included in the deploytask output for downstream consumption.
 - **Package Directory Format**: Ensure your package directory follows the naming convention `*~${PACKAGE_ID}` in the `btp-insuite/IntegrationPackages` directory.
 - **Backward Compatibility**: Both old format (flat keys like `"DEV": "true"`) and new format (`Environments` block) are supported. You can even mix both in the same file — each iFlow is resolved independently.

@@ -45,5 +45,5 @@ Key setup steps include:
 
 ## 💡 Need Help?
 
-- Check the [examples](../examples/README.md) folder for workflow templates
+- Check the [templates](../templates/README.md) folder for workflow templates
 - Review the main [README](../README.md) for project overview

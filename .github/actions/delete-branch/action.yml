@@ -1,0 +1,74 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: 'Delete Branch'
+description: 'Deletes a branch if it exists. Skips silently if the branch does not exist.'
+inputs:
+  branch-name:
+    description: 'Name of the branch to delete'
+    required: true
+  github-token:
+    description: 'GitHub token with contents:write permission'
+    required: true
+outputs:
+  status:
+    description: 'Status of the operation (deleted/not-found/error)'
+    value: ${{ steps.delete.outputs.status }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Delete branch
+      id: delete
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        BRANCH_NAME="${{ inputs.branch-name }}"
+
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🗑️  DELETE BRANCH"
+        echo "════════════════════════════════════════════════════════"
+        echo "🌿 Branch: $BRANCH_NAME"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # Check if branch exists (using branches API for reliable exact-match lookup)
+        branch_ref=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/branches/$BRANCH_NAME" 2>/dev/null)
+
+        if [ $? -ne 0 ]; then
+          echo "✅ Branch '$BRANCH_NAME' does not exist (already cleaned up)"
+          echo "status=not-found" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Delete the branch
+        echo "🗑️  Deleting branch '$BRANCH_NAME'..."
+        
+        delete_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          -X DELETE "/repos/${{ github.repository }}/git/refs/heads/$BRANCH_NAME" 2>&1)
+
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to delete branch '$BRANCH_NAME'"
+          echo "   Response: $delete_response"
+          echo "status=error" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        echo ""
+        echo "✅ Successfully deleted branch '$BRANCH_NAME'"
+        echo "status=deleted" >> $GITHUB_OUTPUT

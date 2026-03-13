@@ -209,7 +209,7 @@ The framework is designed to be extensible. To add a new customer exit:
 
 1. Create a new **caller action** in the cicd-actions repository at `.github/actions/call-cx-<exit-name>/action.yml`
 2. Add a new **activation variable** (e.g., `CX_<EXIT_NAME>`) following the `CX_` prefix convention
-3. Provide a **template action** at `.github/actions/cx-<exit-name>/action.yml` for customers to reference
+3. Provide a **template action** at `templates/actions/cx-<exit-name>/action.yml` for customers to reference
 4. Wire the caller into the appropriate workflow
 
 The `resolve-customer-exit` orchestrator is generic and can be reused for any new exit by passing the `exit-action-name` parameter.

@@ -53,7 +53,7 @@ The action reads a deploytask JSON file. Integration flow entries may include op
         "name": "My Integration Flow",
         "type": "Integration",
         "action": "deploy",
-        "loglevel": "DEBUG",
+        "loglevel": "INFO",
         "runtimes": "iflmap"
       },
       {
@@ -75,7 +75,7 @@ The action reads a deploytask JSON file. Integration flow entries may include op
 | name       | ✅ Yes   | Artifact name (for logging)                                    |
 | type       | ✅ Yes   | Artifact type: `Integration`, `MessageMapping`, `ScriptCollection`, `ValueMapping` |
 | action     | ✅ Yes   | Action: `deploy` or `undeploy`                                 |
-| loglevel   | ❌ No    | Effective log level for the artifact (e.g., `INFO`, `DEBUG`, `ERROR`). Currently logged only. |
+| loglevel   | ❌ No    | Effective log level for the artifact (e.g., `INFO`, `ERROR`, `NONE`). Currently logged only. |
 | runtimes   | ❌ No    | Effective runtimes for the artifact (e.g., `iflmap`, `eicmbag`). Currently logged only. |
 
 ---
