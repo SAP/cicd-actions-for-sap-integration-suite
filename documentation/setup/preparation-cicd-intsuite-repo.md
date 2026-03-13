@@ -20,7 +20,7 @@ At the beginning, your repository only requires a single directory:
 
 Copy the example GitHub Action workflow files from the [cicd-actions-for-sap-integration-suite](https://github.com/SAP/cicd-actions-for-sap-integration-suite) repository:
 
-1. Navigate to the `examples/` folder in the cicd-actions-for-sap-integration-suite repository
+1. Navigate to the `templates/workflows/` folder in the cicd-actions-for-sap-integration-suite repository
 2. Copy the workflow YAML files to your repository's `.github/workflows/` directory
 3. Customize the workflows according to your specific requirements and CI/CD strategy
    

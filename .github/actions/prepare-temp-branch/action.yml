@@ -1,0 +1,139 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: 'Prepare Temporary Release Branch'
+description: 'Renames the development branch to a temporary release branch, or validates restart state'
+inputs:
+  release-name:
+    description: 'The release name (used for temp branch naming)'
+    required: true
+  development-branch:
+    description: 'Name of the development branch'
+    required: false
+    default: 'development'
+  github-token:
+    description: 'GitHub token with contents:write permission'
+    required: true
+outputs:
+  temp-branch:
+    description: 'The name of the temporary release branch'
+    value: ${{ steps.prepare.outputs.temp-branch }}
+  status:
+    description: 'Status of the preparation (created/already-exists/error)'
+    value: ${{ steps.prepare.outputs.status }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Prepare temporary release branch
+      id: prepare
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        RELEASE_NAME="${{ inputs.release-name }}"
+        DEV_BRANCH="${{ inputs.development-branch }}"
+        TEMP_BRANCH="tmp/release-${RELEASE_NAME}"
+
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🔀 PREPARE TEMPORARY RELEASE BRANCH"
+        echo "════════════════════════════════════════════════════════"
+        echo "📋 Release Name: $RELEASE_NAME"
+        echo "🌿 Development Branch: $DEV_BRANCH"
+        echo "🔄 Temp Branch: $TEMP_BRANCH"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        echo "temp-branch=$TEMP_BRANCH" >> $GITHUB_OUTPUT
+
+        # Check if development branch exists (using branches API for reliable exact-match lookup)
+        dev_ref=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/branches/$DEV_BRANCH" 2>/dev/null)
+        dev_exists=$?
+
+        # Check if temp branch already exists
+        temp_ref=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/branches/$TEMP_BRANCH" 2>/dev/null)
+        temp_exists=$?
+
+        if [ $dev_exists -eq 0 ] && [ $temp_exists -ne 0 ]; then
+          # Development branch exists, temp branch does not → rename (create temp from dev SHA, then delete dev)
+          DEV_SHA=$(echo "$dev_ref" | jq -r '.commit.sha')
+          echo "📌 Development branch SHA: $DEV_SHA"
+          echo ""
+
+          # Create temp branch at the same commit as development
+          echo "🔄 Creating temp branch '$TEMP_BRANCH' from '$DEV_BRANCH' (SHA: $DEV_SHA)..."
+          create_response=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            -X POST "/repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/heads/$TEMP_BRANCH" \
+            -f sha="$DEV_SHA" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to create temp branch '$TEMP_BRANCH'"
+            echo "   Response: $create_response"
+            echo "status=error" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Delete development branch
+          echo "🗑️  Deleting development branch '$DEV_BRANCH'..."
+          delete_response=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            -X DELETE "/repos/${{ github.repository }}/git/refs/heads/$DEV_BRANCH" 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "⚠️  Warning: Failed to delete development branch '$DEV_BRANCH'"
+            echo "   Response: $delete_response"
+            echo "   Continuing anyway as temp branch was created successfully."
+          fi
+
+          echo ""
+          echo "✅ Successfully renamed '$DEV_BRANCH' → '$TEMP_BRANCH'"
+          echo "status=created" >> $GITHUB_OUTPUT
+
+        elif [ $temp_exists -eq 0 ]; then
+          # Temp branch already exists (restart case)
+          echo "✅ Temp branch '$TEMP_BRANCH' already exists (restart scenario)"
+
+          if [ $dev_exists -eq 0 ]; then
+            echo "⚠️  Note: Development branch '$DEV_BRANCH' also still exists."
+            echo "   This may indicate a previous partial run. Continuing with existing temp branch."
+          fi
+
+          echo "status=already-exists" >> $GITHUB_OUTPUT
+
+        else
+          # Neither branch exists - provide diagnostic info
+          echo "❌ ERROR: Neither '$DEV_BRANCH' nor '$TEMP_BRANCH' branch exists."
+          echo "   Cannot proceed with release creation."
+          echo ""
+          echo "   Diagnostics:"
+          echo "   - GH_HOSTNAME: $GH_HOSTNAME"
+          echo "   - Repository: ${{ github.repository }}"
+          echo "   - Dev branch API exit code: $dev_exists"
+          echo "   - Temp branch API exit code: $temp_exists"
+          # Re-run dev branch check with stderr visible for debugging
+          echo "   - Dev branch API response:"
+          gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/branches/$DEV_BRANCH" 2>&1 | head -5 | sed 's/^/     /'
+          echo ""
+          echo "   Please ensure either:"
+          echo "   - A '$DEV_BRANCH' branch exists (first run)"
+          echo "   - A '$TEMP_BRANCH' branch exists (restart scenario)"
+          echo "status=error" >> $GITHUB_OUTPUT
+          exit 1
+        fi

@@ -1,0 +1,76 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: 'Check Release/Tag Exists'
+description: 'Checks if a git tag or GitHub release already exists for a given release name'
+inputs:
+  release-name:
+    description: 'The release/tag name to check'
+    required: true
+  github-token:
+    description: 'GitHub token with contents:read permission'
+    required: true
+outputs:
+  release-exists:
+    description: 'Whether the release already exists (true/false)'
+    value: ${{ steps.check.outputs.release-exists }}
+  tag-exists:
+    description: 'Whether the tag already exists (true/false)'
+    value: ${{ steps.check.outputs.tag-exists }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if release/tag exists
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        RELEASE_NAME="${{ inputs.release-name }}"
+
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🔍 CHECK RELEASE/TAG EXISTS"
+        echo "════════════════════════════════════════════════════════"
+        echo "📋 Release Name: $RELEASE_NAME"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # Check if tag exists
+        TAG_EXISTS="false"
+        tag_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/git/refs/tags/$RELEASE_NAME" 2>&1)
+        if [ $? -eq 0 ]; then
+          TAG_EXISTS="true"
+          echo "⚠️  Tag '$RELEASE_NAME' already exists"
+        else
+          echo "✅ Tag '$RELEASE_NAME' does not exist"
+        fi
+
+        # Check if release exists
+        RELEASE_EXISTS="false"
+        release_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/releases/tags/$RELEASE_NAME" 2>&1)
+        if [ $? -eq 0 ]; then
+          RELEASE_EXISTS="true"
+          echo "⚠️  Release '$RELEASE_NAME' already exists"
+        else
+          echo "✅ Release '$RELEASE_NAME' does not exist"
+        fi
+
+        echo ""
+        echo "tag-exists=$TAG_EXISTS" >> $GITHUB_OUTPUT
+        echo "release-exists=$RELEASE_EXISTS" >> $GITHUB_OUTPUT

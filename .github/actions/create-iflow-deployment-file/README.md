@@ -100,7 +100,7 @@ The deployment file supports an optional `Environments` block per iFlow for envi
   "LogLevel": "INFO",
   "Runtimes": "iflmap",
   "Environments": {
-    "DEV": { "Deploy": "true", "LogLevel": "DEBUG", "Runtimes": "iflmap" },
+    "DEV": { "Deploy": "true", "LogLevel": "INFO", "Runtimes": "iflmap" },
     "TST": { "Deploy": "true", "LogLevel": "INFO", "Runtimes": "iflmap" },
     "PRD": { "Deploy": "false", "LogLevel": "ERROR", "Runtimes": "iflmap" }
   }
@@ -116,7 +116,7 @@ The deployment file supports an optional `Environments` block per iFlow for envi
 - **Merge Logic**: The action intelligently preserves existing deployment entries. If an iFlow already exists in the deployment file, all its settings (including stage-specific flags like DEV, TST, PRD) are retained. Only the `ArtifactName` is updated if it changed in the source.
 - **New Entries Default**: New iFlows are created with the following defaults: `Deploy: "false"`, `Rank: "100"`, `LogLevel: "INFO"`, `Runtimes: "iflmap"`. This prevents accidental deployments. Edit the deployment file to adjust these values and configure stage-specific flags as needed.
 - **Rank**: Controls the deployment order of integration flows. Flows are sorted by rank (lower values deploy first). Unranked flows are deployed before ranked ones.
-- **LogLevel**: Sets the default log level for the integration flow (e.g., `INFO`, `DEBUG`, `ERROR`, `TRACE`).
+- **LogLevel**: Sets the default log level for the integration flow (e.g., `INFO`, `ERROR`, `NONE`).
 - **Runtimes**: Specifies the runtime environment for the integration flow (default: `iflmap`).
 - **Directory Structure**: The action creates the directory structure `{PackageName}~{PackageID}/Configuration/` in the `btp-insuite/IntegrationPackages` directory. Ensure this path exists or the action will create it.
 - **Bearer Token**: The bearer token must have sufficient permissions to query BTP Integration Suite APIs. Typically stored as a GitHub secret.

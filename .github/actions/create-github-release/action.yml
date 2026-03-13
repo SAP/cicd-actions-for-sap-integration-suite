@@ -1,0 +1,103 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: 'Create GitHub Release'
+description: 'Creates a GitHub release with a tag on a specified branch'
+inputs:
+  release-name:
+    description: 'The release/tag name to create'
+    required: true
+  target-branch:
+    description: 'The branch to create the release from'
+    required: false
+    default: 'main'
+  github-token:
+    description: 'GitHub token with contents:write permission'
+    required: true
+outputs:
+  release-id:
+    description: 'The created release ID'
+    value: ${{ steps.create-release.outputs.release-id }}
+  release-url:
+    description: 'The URL of the created release'
+    value: ${{ steps.create-release.outputs.release-url }}
+  status:
+    description: 'Status of the release creation (created/already-exists/error)'
+    value: ${{ steps.create-release.outputs.status }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Create GitHub release
+      id: create-release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        RELEASE_NAME="${{ inputs.release-name }}"
+        TARGET_BRANCH="${{ inputs.target-branch }}"
+
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🏷️  CREATE GITHUB RELEASE"
+        echo "════════════════════════════════════════════════════════"
+        echo "📋 Release Name: $RELEASE_NAME"
+        echo "🌿 Target Branch: $TARGET_BRANCH"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # Check if release already exists (restart case)
+        existing_release=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/releases/tags/$RELEASE_NAME" 2>&1)
+
+        if [ $? -eq 0 ]; then
+          RELEASE_ID=$(echo "$existing_release" | jq -r '.id')
+          RELEASE_URL=$(echo "$existing_release" | jq -r '.html_url')
+          echo "✅ Release '$RELEASE_NAME' already exists (restart scenario)"
+          echo "   Release URL: $RELEASE_URL"
+          echo "release-id=$RELEASE_ID" >> $GITHUB_OUTPUT
+          echo "release-url=$RELEASE_URL" >> $GITHUB_OUTPUT
+          echo "status=already-exists" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Create the release
+        echo "🏷️  Creating release '$RELEASE_NAME' on branch '$TARGET_BRANCH'..."
+        
+        create_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          -X POST "/repos/${{ github.repository }}/releases" \
+          -f tag_name="$RELEASE_NAME" \
+          -f target_commitish="$TARGET_BRANCH" \
+          -f name="$RELEASE_NAME" \
+          -f body="Release **${RELEASE_NAME}** created automatically by the release workflow." \
+          -F generate_release_notes=true 2>&1)
+
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to create release '$RELEASE_NAME'"
+          echo "   Response: $create_response"
+          echo "status=error" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        RELEASE_ID=$(echo "$create_response" | jq -r '.id')
+        RELEASE_URL=$(echo "$create_response" | jq -r '.html_url')
+
+        echo ""
+        echo "✅ Successfully created release '$RELEASE_NAME'"
+        echo "   Release ID: $RELEASE_ID"
+        echo "   Release URL: $RELEASE_URL"
+        echo "release-id=$RELEASE_ID" >> $GITHUB_OUTPUT
+        echo "release-url=$RELEASE_URL" >> $GITHUB_OUTPUT
+        echo "status=created" >> $GITHUB_OUTPUT

@@ -1,0 +1,127 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: 'Recreate Branch'
+description: 'Creates (or re-creates) a branch from a specified source reference. Skips if branch already exists.'
+inputs:
+  branch-name:
+    description: 'Name of the branch to create'
+    required: true
+  source-ref:
+    description: 'Source reference (branch/tag/SHA) to create the branch from'
+    required: true
+  github-token:
+    description: 'GitHub token with contents:write permission'
+    required: true
+outputs:
+  status:
+    description: 'Status of the operation (created/already-exists/error)'
+    value: ${{ steps.recreate.outputs.status }}
+  sha:
+    description: 'The SHA of the created branch head'
+    value: ${{ steps.recreate.outputs.sha }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Recreate branch
+      id: recreate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        BRANCH_NAME="${{ inputs.branch-name }}"
+        SOURCE_REF="${{ inputs.source-ref }}"
+
+        # Get GitHub server URL and extract hostname
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🌿 RECREATE BRANCH"
+        echo "════════════════════════════════════════════════════════"
+        echo "🌿 Branch: $BRANCH_NAME"
+        echo "📌 Source: $SOURCE_REF"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # Check if branch already exists (using branches API for reliable exact-match lookup)
+        branch_ref=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/branches/$BRANCH_NAME" 2>/dev/null)
+
+        if [ $? -eq 0 ]; then
+          EXISTING_SHA=$(echo "$branch_ref" | jq -r '.commit.sha')
+          echo "✅ Branch '$BRANCH_NAME' already exists (restart scenario)"
+          echo "   SHA: $EXISTING_SHA"
+          echo "status=already-exists" >> $GITHUB_OUTPUT
+          echo "sha=$EXISTING_SHA" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Resolve source ref to SHA
+        echo "🔍 Resolving source reference '$SOURCE_REF'..."
+
+        # Try as branch first (using branches API for reliable exact-match lookup)
+        source_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/branches/$SOURCE_REF" 2>/dev/null)
+
+        if [ $? -eq 0 ]; then
+          SOURCE_SHA=$(echo "$source_response" | jq -r '.commit.sha')
+        else
+          # Try as tag
+          source_response=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/git/refs/tags/$SOURCE_REF" 2>/dev/null)
+
+          if [ $? -eq 0 ]; then
+            SOURCE_SHA=$(echo "$source_response" | jq -r '.object.sha')
+          else
+            # Try as direct commit SHA
+            source_response=$(gh api --hostname "$GH_HOSTNAME" \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/git/commits/$SOURCE_REF" 2>/dev/null)
+
+            if [ $? -eq 0 ]; then
+              SOURCE_SHA="$SOURCE_REF"
+            else
+              echo "❌ Cannot resolve source reference '$SOURCE_REF'"
+              echo "   It is neither a branch, tag, nor a valid commit SHA."
+              echo "status=error" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+        fi
+
+        echo "   Resolved to SHA: $SOURCE_SHA"
+        echo ""
+
+        # Create the branch
+        echo "🌿 Creating branch '$BRANCH_NAME' from SHA $SOURCE_SHA..."
+        
+        create_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          -X POST "/repos/${{ github.repository }}/git/refs" \
+          -f ref="refs/heads/$BRANCH_NAME" \
+          -f sha="$SOURCE_SHA" 2>&1)
+
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to create branch '$BRANCH_NAME'"
+          echo "   Response: $create_response"
+          echo "status=error" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        echo ""
+        echo "✅ Successfully created branch '$BRANCH_NAME'"
+        echo "   SHA: $SOURCE_SHA"
+        echo "status=created" >> $GITHUB_OUTPUT
+        echo "sha=$SOURCE_SHA" >> $GITHUB_OUTPUT

@@ -1,0 +1,232 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: Create Release from Development Branch
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference the workflow actions should run from"
+        required: true
+        type: string
+      release-name:
+        description: "Name/tag for the new release"
+        required: true
+        type: string
+      development-branch:
+        description: "Name of the development branch"
+        required: false
+        type: string
+        default: 'development'
+      main-branch:
+        description: "Name of the main/production branch"
+        required: false
+        type: string
+        default: 'main'
+      simulation:
+        description: "Simulation mode - creates PR to check mergeability but does not merge or delete branches"
+        required: false
+        type: boolean
+        default: false
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD actions"
+        required: true
+        type: string
+    secrets:
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo"
+        required: true
+      GIT_SUITE_TOKEN:
+        description: "GitHub token for the integration suite repository with contents:write and pull-requests:write permissions"
+        required: true
+
+jobs:
+  create-release:
+    name: Create Release ${{ inputs.release-name }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+
+    steps:
+      - name: Checkout cicd-actions repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      # ─── Step 1: Check if release/tag already exists ───
+      - name: Check if release already exists
+        id: check-release
+        uses: ./cicd-btp-insuite/.github/actions/check-release-tag-exists
+        with:
+          release-name: ${{ inputs.release-name }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Step 2: Determine workflow phase for restart handling ───
+      - name: Determine workflow phase
+        id: phase
+        if: ${{ !inputs.simulation }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
+          GH_ENTERPRISE_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
+        run: |
+          set +e
+
+          RELEASE_EXISTS="${{ steps.check-release.outputs.release-exists }}"
+          DEV_BRANCH="${{ inputs.development-branch }}"
+          TEMP_BRANCH="tmp/release-${{ inputs.release-name }}"
+
+          GITHUB_URL="${{ github.server_url }}"
+          GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+          # Check if development branch exists (using branches API for reliable exact-match lookup)
+          dev_check=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/branches/$DEV_BRANCH" 2>/dev/null)
+          DEV_EXISTS=$?
+
+          # Check if temp branch exists
+          temp_check=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/branches/$TEMP_BRANCH" 2>/dev/null)
+          TEMP_EXISTS=$?
+
+          echo "════════════════════════════════════════════════════════"
+          echo "📊 WORKFLOW PHASE DETECTION"
+          echo "════════════════════════════════════════════════════════"
+          echo "   Release exists: $RELEASE_EXISTS"
+          echo "   Development branch exists: $([ $DEV_EXISTS -eq 0 ] && echo 'true' || echo 'false')"
+          echo "   Temp branch exists: $([ $TEMP_EXISTS -eq 0 ] && echo 'true' || echo 'false')"
+          echo "════════════════════════════════════════════════════════"
+
+          if [ "$RELEASE_EXISTS" == "true" ]; then
+            if [ $DEV_EXISTS -eq 0 ] && [ $TEMP_EXISTS -ne 0 ]; then
+              echo "✅ Release already exists and cleanup is complete. Nothing to do."
+              echo "phase=complete" >> $GITHUB_OUTPUT
+            elif [ $TEMP_EXISTS -eq 0 ]; then
+              echo "⚠️  Release exists but temp branch still present. Resuming from cleanup phase."
+              echo "phase=cleanup" >> $GITHUB_OUTPUT
+            elif [ $DEV_EXISTS -ne 0 ] && [ $TEMP_EXISTS -ne 0 ]; then
+              echo "⚠️  Release exists but development branch is missing. Resuming from recreate phase."
+              echo "phase=recreate-dev" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Release already exists. Nothing to do."
+              echo "phase=complete" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "📋 Release does not exist. Starting from the beginning."
+            echo "phase=start" >> $GITHUB_OUTPUT
+          fi
+
+      # ─── Step 3: Prepare temp branch (rename development → tmp/release-X) ───
+      - name: Prepare temporary release branch
+        id: prepare-branch
+        if: ${{ !inputs.simulation && steps.phase.outputs.phase == 'start' }}
+        uses: ./cicd-btp-insuite/.github/actions/prepare-temp-branch
+        with:
+          release-name: ${{ inputs.release-name }}
+          development-branch: ${{ inputs.development-branch }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Step 4: Manage PR (find/create, check mergeability, squash merge) ───
+      # In simulation mode: creates PR from development → main, checks mergeability, then closes PR without merging
+      # In normal mode: creates PR from tmp/release-X → main, checks mergeability, and squash merges
+      - name: Manage release PR and merge
+        id: manage-pr
+        if: ${{ inputs.simulation || steps.phase.outputs.phase == 'start' }}
+        uses: ./cicd-btp-insuite/.github/actions/manage-release-pr
+        with:
+          release-name: ${{ inputs.release-name }}
+          source-branch: ${{ inputs.simulation && inputs.development-branch || format('tmp/release-{0}', inputs.release-name) }}
+          target-branch: ${{ inputs.main-branch }}
+          simulation: ${{ inputs.simulation }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Step 5: Create GitHub release with tag ───
+      - name: Create GitHub release
+        id: create-release
+        if: ${{ !inputs.simulation && ((steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state != 'no-changes') || steps.phase.outputs.phase == 'cleanup' || steps.phase.outputs.phase == 'recreate-dev') }}
+        uses: ./cicd-btp-insuite/.github/actions/create-github-release
+        with:
+          release-name: ${{ inputs.release-name }}
+          target-branch: ${{ inputs.main-branch }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Step 6: Recreate development branch ───
+      # When pr-state is 'no-changes', recreate development from the temp branch (effectively renaming it back)
+      # Otherwise, recreate development from main (fresh start after merge)
+      - name: Recreate development branch
+        id: recreate-dev
+        if: ${{ !inputs.simulation && (steps.phase.outputs.phase == 'start' || steps.phase.outputs.phase == 'cleanup' || steps.phase.outputs.phase == 'recreate-dev') }}
+        uses: ./cicd-btp-insuite/.github/actions/recreate-branch
+        with:
+          branch-name: ${{ inputs.development-branch }}
+          source-ref: ${{ (steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state == 'no-changes') && format('tmp/release-{0}', inputs.release-name) || inputs.main-branch }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Step 7: Delete temporary branch ───
+      - name: Delete temporary release branch
+        id: delete-temp
+        if: ${{ !inputs.simulation && (steps.phase.outputs.phase == 'start' || steps.phase.outputs.phase == 'cleanup') }}
+        uses: ./cicd-btp-insuite/.github/actions/delete-branch
+        with:
+          branch-name: tmp/release-${{ inputs.release-name }}
+          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+
+      # ─── Summary ───
+      - name: Release summary
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          if [ "${{ inputs.simulation }}" == "true" ]; then
+            echo "🔬 SIMULATION WORKFLOW SUMMARY"
+          else
+            echo "📊 RELEASE WORKFLOW SUMMARY"
+          fi
+          echo "════════════════════════════════════════════════════════"
+          echo "📋 Release: ${{ inputs.release-name }}"
+          if [ "${{ inputs.simulation }}" == "true" ]; then
+            echo "🔬 Mode: SIMULATION (no changes were made)"
+          else
+            echo "🔄 Phase: ${{ steps.phase.outputs.phase }}"
+          fi
+          echo ""
+          echo "Step Results:"
+          echo "   Check Release:  ${{ steps.check-release.outputs.release-exists == 'true' && '⚠️ Already exists' || '✅ Does not exist' }}"
+          if [ "${{ inputs.simulation }}" != "true" ]; then
+            echo "   Prepare Branch: ${{ steps.prepare-branch.outputs.status || 'skipped' }}"
+          fi
+          echo "   Manage PR:      ${{ steps.manage-pr.outputs.pr-state || 'skipped' }}"
+          if [ "${{ inputs.simulation }}" != "true" ]; then
+            echo "   Create Release: ${{ steps.create-release.outputs.status || 'skipped' }}"
+            echo "   Recreate Dev:   ${{ steps.recreate-dev.outputs.status || 'skipped' }}"
+            echo "   Delete Temp:    ${{ steps.delete-temp.outputs.status || 'skipped' }}"
+          fi
+          echo ""
+          if [ "${{ inputs.simulation }}" == "true" ]; then
+            PR_STATE="${{ steps.manage-pr.outputs.pr-state }}"
+            if [ "$PR_STATE" == "simulation-ok" ]; then
+              echo "✅ SIMULATION RESULT: Merge from ${{ inputs.development-branch }} → ${{ inputs.main-branch }} would SUCCEED"
+            elif [ "$PR_STATE" == "simulation-conflict" ]; then
+              echo "❌ SIMULATION RESULT: Merge from ${{ inputs.development-branch }} → ${{ inputs.main-branch }} would FAIL due to conflicts"
+            elif [ "$PR_STATE" == "no-changes" ]; then
+              echo "ℹ️  SIMULATION RESULT: No changes between ${{ inputs.development-branch }} and ${{ inputs.main-branch }}"
+            else
+              echo "⚠️  SIMULATION RESULT: $PR_STATE"
+            fi
+          fi
+          if [ -n "${{ steps.create-release.outputs.release-url }}" ]; then
+            echo "🔗 Release URL: ${{ steps.create-release.outputs.release-url }}"
+          fi
+          if [ -n "${{ steps.manage-pr.outputs.pr-url }}" ]; then
+            echo "🔗 PR URL: ${{ steps.manage-pr.outputs.pr-url }}"
+          fi
+          echo "════════════════════════════════════════════════════════"

@@ -1,0 +1,64 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-13 - Initial release
+#
+
+name: (Admin) GIT Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-name:
+        description: "Release name/tag (e.g., v1.0.0)"
+        required: true
+        type: string
+      simulation:
+        description: "Simulation mode - creates PR to check mergeability but does not merge or delete branches"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  initialize:
+    name: Authorize & Read Environment Variables
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
+    steps:
+      - name: Checkout cicd-actions repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          ref: v1
+          path: cicd-btp-insuite
+          token: ${{ secrets.GIT_CICD_TOKEN }}
+
+      - name: Check team authorization
+        uses: ./cicd-btp-insuite/.github/actions/check-team-authorization
+        with:
+          team-slug: ${{ vars.BTP_ADMIN_TEAM_SLUG }}
+          github-token: ${{ secrets.GIT_ORG_TOKEN }}
+
+      - name: Export vars
+        id: export
+        run: |
+          echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
+
+  create-release:
+    needs: [initialize]
+    name: Create Release
+    uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/create-release.yml@v1
+    with:
+      workflow-ref: v1
+      release-name: ${{ github.event.inputs.release-name }}
+      simulation: ${{ github.event.inputs.simulation == 'true' }}
+      git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }}
+    secrets:
+      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+      GIT_SUITE_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
