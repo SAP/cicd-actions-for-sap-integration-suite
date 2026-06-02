@@ -1,0 +1,258 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+# 1.1.0 - 2026-05-22 - Add GIT_CICD_APP_PRIVATE_KEY support; resolve CICD token via GitHub App (preferred) or PAT fallback
+#
+
+name: Delete / Upload AccessPolicies
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      target-env:
+        description: "Environment"
+        required: true
+        type: string
+      source-ref:
+        description: "GIT Source Reference"
+        required: true
+        type: string
+      accesspolicies-upload-names:
+        description: "Comma-separated list of Access Policy names to upload"
+        required: false
+        type: string
+      accesspolicies-delete-names:
+        description: "Comma-separated list of Access Policy names to delete"
+        required: false
+        type: string
+      btp-api-user:
+        description: "BTP Service Key (ClientID) to access Token Endpoint"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP technical User with Access Policy for Integration Suite"
+        required: true
+        type: string
+      btp-token-url:
+        description: "URL on BTP to request Token"
+        required: true
+        type: string
+      btp-api-url:
+        description: "URL on BTP to access APIs"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+    secrets:
+      BTP_TEC_PASSWORD:
+        required: true
+      BTP_API_PASSWORD:
+        required: true
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY)"
+        required: false
+      GIT_CICD_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for CICD reader app (preferred — used together with GIT_CICD_APP_ID variable)"
+        required: false
+
+jobs:
+  preprocess-names:
+    name: Preprocess Names
+    environment: ${{ inputs.target-env }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      accesspolicies_to_upload: ${{ steps.parse-csv-to-json.outputs.to_upload }}
+      accesspolicies_to_delete: ${{ steps.parse-csv-to-json.outputs.to_delete }}
+      accesspolicies_all_names: ${{ steps.parse-csv-to-json.outputs.all_ids }}
+
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+
+      - name: Parse AccessPolicies CSVs to JSON arrays
+        id: parse-csv-to-json
+        uses: ./cicd-btp-insuite/.github/actions/parse-csv-to-json
+        with:
+          delete-ids: ${{ inputs.accesspolicies-delete-names }}
+          upload-ids: ${{ inputs.accesspolicies-upload-names }}
+          empty-array-default: EmptyMatrix
+
+  btp-accesspolicy-delete:
+    needs: [preprocess-names]
+    name: Delete Access Policy ${{ matrix.name }}
+    environment: ${{ inputs.target-env }}
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        name: ${{ fromJson(needs.preprocess-names.outputs.accesspolicies_to_delete) }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ matrix.name != 'EmptyMatrix' && vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+
+      - name: Delete Access Policy from BTP
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        uses: ./cicd-btp-insuite/.github/actions/update-access-policy
+        with:
+          source-ref: ${{ inputs.source-ref }}
+          access-policy-name: ${{ matrix.name }}
+          case: "Delete"
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+  btp-accesspolicy-upload:
+    needs: [preprocess-names, btp-accesspolicy-delete]
+    name: Upload Access Policy ${{ matrix.name }}
+    environment: ${{ inputs.target-env }}
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        name: ${{ fromJson(needs.preprocess-names.outputs.accesspolicies_to_upload) }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ matrix.name != 'EmptyMatrix' && vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+
+      - name: Upload Access Policy to BTP
+        if: ${{ matrix.name != 'EmptyMatrix' }}
+        uses: ./cicd-btp-insuite/.github/actions/update-access-policy
+        with:
+          source-ref: ${{ inputs.source-ref }}
+          access-policy-name: ${{ matrix.name }}
+          case: "Upload"
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+  output-status:
+    needs: [preprocess-names, btp-accesspolicy-delete, btp-accesspolicy-upload]
+    environment: ${{ inputs.target-env }}
+    if: ${{ always() }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    steps:
+      - name: Echo Status
+        run: |
+          echo "needs.preprocess-names.result = ${{ needs.preprocess-names.result }}"
+          echo "needs.btp-accesspolicy-delete.result = ${{ needs.btp-accesspolicy-delete.result }}"
+          echo "needs.btp-accesspolicy-upload.result = ${{ needs.btp-accesspolicy-upload.result }}"

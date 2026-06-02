@@ -1,0 +1,269 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+# 1.0.1 - 2026-05-06 - Add rollback mechanism if upload fails after delete
+#
+
+name: 'Update Access Policy from GIT (Upload / Delete)'
+description: 'Upload or delete an access policy in BTP Integration Suite from GIT. Includes rollback on failure.'
+
+inputs:
+  source-ref:
+    description: "GIT Source Reference"
+    required: true
+  access-policy-name:
+    description: "Name (RoleName) of the Access Policy"
+    required: true
+  case:
+    description: "Delete or Upload Access Policy in BTP IS"
+    required: true
+  btp-api-user:
+    description: "BTP Service Key (ClientID) to access Token Endpoint"
+    required: true
+  btp-tec-user:
+    description: "BTP technical User with Access Policy for Integration Suite"
+    required: true
+  btp-token-url:
+    description: "URL on BTP to request Token"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  BTP_API_PASSWORD:
+    description: "BTP API Password"
+    required: true
+  BTP_TEC_PASSWORD:
+    description: "BTP Technical User Password"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.source-ref }}
+        path: btp-insuite
+
+    - name: Request OAuth Token
+      id: get-token
+      uses: ./cicd-btp-insuite/.github/actions/get-token
+      with:
+        btp-api-user: ${{ inputs.btp-api-user }}
+        btp-tec-user: ${{ inputs.btp-tec-user }}
+        btp-token-url: ${{ inputs.btp-token-url }}
+        BTP_API_PASSWORD: ${{ inputs.BTP_API_PASSWORD }}
+        BTP_TEC_PASSWORD: ${{ inputs.BTP_TEC_PASSWORD }}
+
+    ## Backup existing Access Policy before any destructive operation
+    - name: Backup existing Access Policy from BTP
+      id: backup
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ steps.get-token.outputs.token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        POLICY_NAME: ${{ inputs.access-policy-name }}
+      run: |
+        BACKUP_DIR="${{ runner.temp }}/access-policy-backup/$POLICY_NAME"
+        mkdir -p "$BACKUP_DIR"
+
+        echo "🔒 Creating backup of Access Policy '$POLICY_NAME' before modification..."
+
+        # Lookup existing policy
+        FILTER_URL="$BTP_API_URL/api/v1/AccessPolicies?\$filter=RoleName%20eq%20'$POLICY_NAME'&\$format=json"
+        curl_response=$(curl -s -w "\n%{http_code}" -X GET "$FILTER_URL" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Accept: application/json")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "Error: HTTP status $HTTP_STATUS while looking up Access Policy for backup."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+
+        POLICY_ID=$(echo "$BODY" | jq -r '.d.results[0].Id // empty')
+
+        if [ -z "$POLICY_ID" ]; then
+          echo "Access Policy '$POLICY_NAME' does not exist on BTP — no backup needed."
+          echo "backup-exists=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Found Access Policy '$POLICY_NAME' with ID $POLICY_ID"
+
+        # Save policy metadata
+        echo "$BODY" | jq '.d.results[0] | del(.__metadata)' > "$BACKUP_DIR/AccessPolicy.json"
+        echo "policy-id=$POLICY_ID" >> "$GITHUB_OUTPUT"
+        echo "backup-exists=true" >> "$GITHUB_OUTPUT"
+        echo "backup-dir=$BACKUP_DIR" >> "$GITHUB_OUTPUT"
+
+        # Fetch and save artifact references
+        curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/AccessPolicies(${POLICY_ID}L)/ArtifactReferences?\$format=json" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Accept: application/json")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "Warning: HTTP status $HTTP_STATUS while fetching Artifact References for backup."
+          echo "Response body: $BODY"
+          echo "$BODY" > "$BACKUP_DIR/ArtifactReferences.json"
+        else
+          echo "$BODY" | jq '.d.results[] |= del(.__metadata, .AccessPolicy)' > "$BACKUP_DIR/ArtifactReferences.json"
+        fi
+
+        echo "✅ Backup of Access Policy '$POLICY_NAME' (ID: $POLICY_ID) created at $BACKUP_DIR"
+        ls -la "$BACKUP_DIR"
+
+    - name: Delete Access Policy from BTP
+      id: delete-policy
+      uses: ./cicd-btp-insuite/.github/actions/delete-access-policy
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        access-policy-name: ${{ inputs.access-policy-name }}
+
+    - name: Upload Access Policy to BTP
+      id: upload-policy
+      if: ${{ inputs.case == 'Upload' }}
+      uses: ./cicd-btp-insuite/.github/actions/upload-access-policy
+      with:
+        bearer-token: ${{ steps.get-token.outputs.token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        access-policy-name: ${{ inputs.access-policy-name }}
+
+    ## Rollback: Restore Access Policy from backup if upload failed
+    - name: "🔄 Rollback: Restore Access Policy from backup"
+      if: ${{ failure() && steps.backup.outputs.backup-exists == 'true' && inputs.case == 'Upload' }}
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ steps.get-token.outputs.token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        POLICY_NAME: ${{ inputs.access-policy-name }}
+        BACKUP_DIR: ${{ steps.backup.outputs.backup-dir }}
+      run: |
+        echo "⚠️ Upload failed! Initiating rollback for Access Policy '$POLICY_NAME'..."
+
+        if [ ! -f "$BACKUP_DIR/AccessPolicy.json" ]; then
+          echo "Error: Backup file not found at $BACKUP_DIR/AccessPolicy.json — cannot rollback!"
+          exit 1
+        fi
+
+        # Read backup data
+        ROLE_NAME=$(jq -r '.RoleName' "$BACKUP_DIR/AccessPolicy.json")
+        DESCRIPTION=$(jq -r '.Description' "$BACKUP_DIR/AccessPolicy.json")
+
+        echo "Restoring Access Policy '$ROLE_NAME'..."
+
+        # Check if the policy already exists (e.g., upload-access-policy step created it but artifact references failed)
+        FILTER_URL="$BTP_API_URL/api/v1/AccessPolicies?\$filter=RoleName%20eq%20'$ROLE_NAME'&\$format=json"
+        curl_response=$(curl -s -w "\n%{http_code}" -X GET "$FILTER_URL" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Accept: application/json")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        EXISTING_ID=""
+        if [ "$HTTP_STATUS" == "200" ]; then
+          EXISTING_ID=$(echo "$BODY" | jq -r '.d.results[0].Id // empty')
+        fi
+
+        if [ -n "$EXISTING_ID" ]; then
+          echo "Policy '$ROLE_NAME' already exists with ID $EXISTING_ID (partially created). Deleting it first..."
+
+          # Delete the partially created policy
+          curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/AccessPolicies(${EXISTING_ID}L)" \
+            -H "Authorization: $BEARER_TOKEN")
+          HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "204" ] && [ "$HTTP_STATUS" != "404" ]; then
+            echo "⚠️ Warning: HTTP status $HTTP_STATUS while deleting partially created policy. Trying to recreate anyway..."
+          else
+            echo "✅ Partially created policy deleted."
+          fi
+        fi
+
+        # Recreate the Access Policy from backup
+        PAYLOAD=$(jq -n --arg rn "$ROLE_NAME" --arg desc "$DESCRIPTION" '{"RoleName":$rn,"Description":$desc}')
+        curl_response=$(curl -s -w "\n%{http_code}" -X POST "$BTP_API_URL/api/v1/AccessPolicies" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          -d "$PAYLOAD")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "201" ]; then
+          echo "❌ CRITICAL: Rollback failed! HTTP status $HTTP_STATUS while recreating Access Policy."
+          echo "Response body: $BODY"
+          echo "Manual intervention required! Backup data is at: $BACKUP_DIR"
+          cat "$BACKUP_DIR/AccessPolicy.json"
+          exit 1
+        fi
+
+        NEW_ID=$(echo "$BODY" | jq -r '.d.Id')
+        echo "✅ Access Policy '$ROLE_NAME' restored with new ID $NEW_ID."
+
+        # Restore Artifact References from backup
+        if [ -f "$BACKUP_DIR/ArtifactReferences.json" ]; then
+          REFERENCES=$(jq -c '.d.results[]' "$BACKUP_DIR/ArtifactReferences.json" 2>/dev/null || echo "")
+
+          if [ -n "$REFERENCES" ]; then
+            echo "Restoring Artifact References..."
+
+            while IFS= read -r REF; do
+              [ -z "$REF" ] && continue
+              NAME=$(echo "$REF" | jq -r '.Name')
+              REF_DESC=$(echo "$REF" | jq -r '.Description')
+              TYPE=$(echo "$REF" | jq -r '.Type')
+              CONDITION_ATTR=$(echo "$REF" | jq -r '.ConditionAttribute')
+              CONDITION_VAL=$(echo "$REF" | jq -r '.ConditionValue')
+              CONDITION_TYPE=$(echo "$REF" | jq -r '.ConditionType')
+
+              REF_PAYLOAD=$(jq -n \
+                --arg name "$NAME" \
+                --arg desc "$REF_DESC" \
+                --arg type "$TYPE" \
+                --arg condAttr "$CONDITION_ATTR" \
+                --arg condVal "$CONDITION_VAL" \
+                --arg condType "$CONDITION_TYPE" \
+                --arg policyId "$NEW_ID" \
+                '{
+                  "Name": $name,
+                  "Description": $desc,
+                  "Type": $type,
+                  "ConditionAttribute": $condAttr,
+                  "ConditionValue": $condVal,
+                  "ConditionType": $condType,
+                  "AccessPolicy": {"Id": $policyId}
+                }')
+
+              curl_response=$(curl -s -w "\n%{http_code}" -X POST "$BTP_API_URL/api/v1/ArtifactReferences" \
+                -H "Authorization: $BEARER_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -d "$REF_PAYLOAD")
+
+              HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+              if [ "$HTTP_STATUS" != "201" ]; then
+                echo "⚠️ Warning: Could not restore Artifact Reference '$NAME' (HTTP $HTTP_STATUS)."
+                echo "Response body: $(echo "$curl_response" | sed '$d')"
+              else
+                echo "  ✅ Artifact Reference '$NAME' restored."
+              fi
+            done <<< "$REFERENCES"
+          fi
+        fi
+
+        echo ""
+        echo "🔄 Rollback completed! Access Policy '$ROLE_NAME' has been restored with ID $NEW_ID."
+        echo "⚠️ Note: The original upload operation failed. Please investigate the root cause before retrying."
+        exit 1

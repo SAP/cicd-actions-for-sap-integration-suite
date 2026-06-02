@@ -10,9 +10,9 @@ This guide will help you set up and use the GitHub Actions–based CI/CD control
 
 This solution enables you to:
 
-- 📦 Download **Integration packages** and **Partner Directory IDs** from SAP Integration Suite
+- 📦 Download **Integration packages**, **Partner Directory IDs**, and **Access Policies** from SAP Integration Suite
 - 🗃️ Store content and configuration in **Git**
-- ⚙️ Orchestrate deployments across **DEV / TST / PRD** environments
+- ⚙️ Orchestrate deployments and manage Access Policies across **DEV, TST, and any additional configured environments**
 - 🔄 Synchronize between Design Time and Runtime
 
 ---
@@ -46,4 +46,5 @@ Key setup steps include:
 ## 💡 Need Help?
 
 - Check the [templates](../templates/README.md) folder for workflow templates
+- Browse the [customer exit templates](../templates/actions/cx-derive-iflow-exclusions/action.yml) for implementation examples
 - Review the main [README](../README.md) for project overview

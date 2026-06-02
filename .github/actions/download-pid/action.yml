@@ -3,107 +3,116 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
+# 2.0.0 - 2026-02-27 - Refactored to pure download with configurable output-dir
 #
 name: 'download-pid'
-description: 'Composite action to download Partner Directory entry and process parameters.'
+description: 'Download Partner Directory entries from Cloud Integration to a specified folder'
+
 inputs:
   bearer-token:
     description: 'BEARER Token to access Integration Suite Artifacts'
     required: true
-    type: string
   partner-id:
-    description: 'Partner ID'
+    description: 'Partner ID to download'
     required: true
   btp-api-url:
     description: 'URL on BTP to access APIs'
     required: true
+  output-dir:
+    description: 'Directory to save downloaded JSON files (default: /tmp/pd)'
+    required: false
+    default: '/tmp/pd'
+
+outputs:
+  output-dir:
+    description: 'Path to the directory containing downloaded files'
+    value: ${{ inputs.output-dir }}
+  string-parameters-file:
+    description: 'Path to downloaded StringParameters JSON file'
+    value: ${{ inputs.output-dir }}/StringParameters.json
+  alternative-partners-file:
+    description: 'Path to downloaded AlternativePartners JSON file'
+    value: ${{ inputs.output-dir }}/AlternativePartners.json
+  authorized-users-file:
+    description: 'Path to downloaded AuthorizedUsers JSON file'
+    value: ${{ inputs.output-dir }}/AuthorizedUsers.json
+  binary-parameters-file:
+    description: 'Path to downloaded BinaryParameters JSON file'
+    value: ${{ inputs.output-dir }}/BinaryParameters.json
 
 runs:
   using: 'composite'
   steps:
-    - name: Check PartnerID Existence
-      id: check-existence
-      uses: ./cicd-btp-insuite/.github/actions/check-partnerid-exists
-      with:
-        bearer-token: ${{ inputs.bearer-token }}
-        btp-api-url: ${{ inputs.btp-api-url }}
-        partner-id: ${{ inputs.partner-id }}
-
-    - name: GET StringParameters
-      id: get-parameter-sp
-      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
-      with:
-        bearer-token: ${{ inputs.bearer-token }}
-        btp-api-url: ${{ inputs.btp-api-url }}
-        partner-id: ${{ inputs.partner-id }}
-        parameter-type: StringParameters
-
-    - name: Clean JSON StringParameters
-      id: clean-json-sp
-      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
-      with:
-        filename: ${{ steps.get-parameter-sp.outputs.file }}
-        keep_nodes: d.results.Pid,d.results.Id,d.results.Value
-
-    - name: GET AlternativePartners
-      id: get-parameter-ap
-      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
-      with:
-        bearer-token: ${{ inputs.bearer-token }}
-        btp-api-url: ${{ inputs.btp-api-url }}
-        partner-id: ${{ inputs.partner-id }}
-        parameter-type: AlternativePartners
-
-    - name: Clean JSON AlternativePartners
-      id: clean-json-ap
-      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
-      with:
-        filename: ${{ steps.get-parameter-ap.outputs.file }}
-        keep_nodes: d.results.Pid,d.results.Agency, d.results.Id, d.results.Scheme
-
-    - name: GET AuthorizedUsers
-      id: get-parameter-au
-      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
-      with:
-        bearer-token: ${{ inputs.bearer-token }}
-        btp-api-url: ${{ inputs.btp-api-url }}
-        partner-id: ${{ inputs.partner-id }}
-        parameter-type: AuthorizedUsers
-
-    - name: Clean JSON AuthorizedUsers
-      id: clean-json-au
-      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
-      with:
-        filename: ${{ steps.get-parameter-au.outputs.file }}
-        keep_nodes: d.results.Pid,d.results.User
-
-    - name: GET BinaryParameters
-      id: get-parameter-bp
-      uses: ./cicd-btp-insuite/.github/actions/get-parameter-pd
-      with:
-        bearer-token: ${{ inputs.bearer-token }}
-        btp-api-url: ${{ inputs.btp-api-url }}
-        partner-id: ${{ inputs.partner-id }}
-        parameter-type: BinaryParameters
-
-    - name: Clean JSON BinaryParameters
-      id: clean-json-bp
-      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
-      with:
-        filename: ${{ steps.get-parameter-bp.outputs.file }}
-        keep_nodes: d.results.Pid,d.results.ContentType, d.results.Id, d.results.Value
-
-    - name: Create Partner Directory
-      uses: ./cicd-btp-insuite/.github/actions/create-partner-directory
-      with:
-        partner-id: ${{ inputs.partner-id }}
-        StringParameters: ${{ steps.get-parameter-sp.outputs.file }}
-        AlternativePartners: ${{ steps.get-parameter-ap.outputs.file }}
-        AuthorizedUsers: ${{ steps.get-parameter-au.outputs.file }}
-        BinaryParameters: ${{ steps.get-parameter-bp.outputs.file }}
-
-    - name: Decode BinaryParameters and update JSON
-      uses: ./cicd-btp-insuite/.github/actions/decode-binary-parameters
-      with:
-        partner-id: ${{ inputs.partner-id }}
-        output-dir: btp-insuite/PartnerDirectory
+    - name: Download Partner Directory from Cloud Integration
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PARTNERID: ${{ inputs.partner-id }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+      run: |
+        set -euo pipefail
+        
+        echo "========================================"
+        echo "📥 Downloading Partner Directory"
+        echo "========================================"
+        echo "Partner ID: $PARTNERID"
+        echo "Output Directory: $OUTPUT_DIR"
+        echo "----------------------------------------"
+        
+        # Create output directory
+        mkdir -p "$OUTPUT_DIR"
+        
+        # Check if Partner ID exists
+        echo "🔍 Checking Partner ID existence..."
+        curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/Partners?\$format=json&\$filter=Pid%20eq%20'$PARTNERID'" \
+          -H "Authorization: $BEARER_TOKEN")
+        
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+        
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "❌ Error: HTTP status $HTTP_STATUS received while checking Partner ID"
+          echo "Response body: $BODY"
+          exit 1
+        fi
+        
+        count=$(echo "$BODY" | jq -r '.d.results | length')
+        if [ "$count" -ne 1 ]; then
+          echo "❌ Error: Partner ID $PARTNERID not found (count: $count)"
+          exit 1
+        fi
+        
+        echo "✅ Partner ID $PARTNERID exists"
+        
+        # Download each Partner Directory type
+        for type in "StringParameters" "AlternativePartners" "AuthorizedUsers" "BinaryParameters"; do
+          echo ""
+          echo "📄 Downloading $type..."
+          
+          curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/$type?\$format=json&\$filter=Pid%20eq%20'$PARTNERID'" \
+            -H "Authorization: $BEARER_TOKEN")
+          
+          HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+          BODY=$(echo "$curl_response" | sed '$d')
+          
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "   ❌ Error: HTTP status $HTTP_STATUS received"
+            echo "   Response body: $BODY"
+            exit 1
+          fi
+          
+          # Extract .d.results array and save to file
+          RESULTS=$(echo "$BODY" | jq -c '.d.results')
+          ENTRY_COUNT=$(echo "$RESULTS" | jq '. | length')
+          
+          echo "{\"d\":{\"results\":$RESULTS}}" > "$OUTPUT_DIR/$type.json"
+          echo "   ✅ Downloaded $ENTRY_COUNT entries → $OUTPUT_DIR/$type.json"
+        done
+        
+        echo ""
+        echo "========================================"
+        echo "✅ Download completed successfully"
+        echo "========================================"
+        echo "Files saved to: $OUTPUT_DIR"
+        ls -la "$OUTPUT_DIR"

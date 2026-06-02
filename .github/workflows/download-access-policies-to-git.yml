@@ -1,0 +1,182 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+# 1.1.0 - 2026-05-21 - Rename storage directory from SecurityContent to AccessPolicies
+# 1.2.0 - 2026-05-22 - Add GIT_CICD_APP_PRIVATE_KEY support; resolve CICD token via GitHub App (preferred) or PAT fallback
+
+name: (Admin) BTP Download Access Policies to Git
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      source-env:
+        description: "Source Environment"
+        required: true
+        type: string
+      target-ref:
+        description: "GIT Target Reference"
+        required: true
+        type: string
+      names:
+        description: "Comma-separated list of Access Policy names to download."
+        required: true
+        type: string
+      commit-message:
+        description: "JIRA Story / SNOW Incident"
+        required: true
+        type: string
+      btp-api-user:
+        description: "BTP Service Key (ClientID) to access Token Endpoint"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP technical User with Access Policy for Integration Suite"
+        required: true
+        type: string
+      btp-token-url:
+        description: "URL on BTP to request Token"
+        required: true
+        type: string
+      btp-api-url:
+        description: "URL on BTP to access APIs"
+        required: true
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+        
+    secrets:
+      BTP_API_PASSWORD:
+        description: "Client Secret for API User"
+        required: true
+      BTP_TEC_PASSWORD:
+        description: "Password of technical User"
+        required: true
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY)"
+        required: false
+      GIT_CICD_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for CICD reader app (preferred — used together with GIT_CICD_APP_ID variable)"
+        required: false
+          
+permissions:
+  contents: write
+
+jobs:
+  preparation:
+    name: Prepare Access Policy Name(s)
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    environment: ${{ inputs.source-env }}
+    outputs:
+      names-json: ${{ steps.parse-names.outputs.names-json }}
+
+    steps:
+      - name: Parse Names
+        id: parse-names
+        run: |
+          # Convert comma-separated string to JSON array
+          IFS=',' read -ra NAMES <<< "${{ inputs.names }}"
+          JSON_ARRAY="["
+          for i in "${!NAMES[@]}"; do
+            # Trim whitespace
+            NAME=$(echo "${NAMES[$i]}" | xargs)
+            if [ $i -gt 0 ]; then
+              JSON_ARRAY="${JSON_ARRAY},"
+            fi
+            JSON_ARRAY="${JSON_ARRAY}\"${NAME}\""
+          done
+          JSON_ARRAY="${JSON_ARRAY}]"
+          echo "names-json=${JSON_ARRAY}" >> $GITHUB_OUTPUT
+          
+          cat $GITHUB_OUTPUT
+
+  download-access-policy:
+    needs: preparation
+    name: ${{ matrix.name }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    environment: ${{ inputs.source-env }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        name: ${{ fromJson(needs.preparation.outputs.names-json) }}
+
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+          ref: ${{ inputs.workflow-ref }}
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target-ref }}
+          path: btp-insuite
+
+      - name: Check dir AccessPolicies
+        run: |
+          if [ ! -d "btp-insuite/AccessPolicies" ]; then
+            echo "🚫 Directory btp-insuite/AccessPolicies not found. Creating it..."
+            mkdir -p btp-insuite/AccessPolicies
+          else
+            echo "✅ Directory btp-insuite/AccessPolicies found."
+          fi
+
+      - name: Request OAuth Token
+        id: get-token
+        uses: ./cicd-btp-insuite/.github/actions/get-token
+        with:
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+      - name: Download Access Policy
+        uses: ./cicd-btp-insuite/.github/actions/download-access-policy
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          access-policy-name: ${{ matrix.name }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+
+      - name: GIT Commit
+        id: git-commit
+        uses: ./cicd-btp-insuite/.github/actions/git-commit
+        with:
+          comment: ${{ inputs.commit-message }}
+          directory: "btp-insuite/AccessPolicies"

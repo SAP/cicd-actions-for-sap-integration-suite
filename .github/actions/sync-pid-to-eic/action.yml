@@ -1,0 +1,171 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-02-27 - Initial release; refactored to reuse download-pid action
+# 1.2.0 - 2026-05-05 - Add eic-url-template parameter; EIC URL path not yet published — subject to change
+#
+
+name: Sync Partner Directory to Edge Integration Cells
+description: Sync Partner Directory entries from Cloud Integration to Edge Integration Cell runtimes
+
+inputs:
+  bearer-token:
+    description: "OAuth Bearer Token for API authentication"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  partner-id:
+    description: "Partner ID to sync"
+    required: true
+  eic-runtimes:
+    description: "Comma-separated list of Edge Integration Cell runtime identifiers"
+    required: true
+  eic-url-template:
+    description: "URL path template for EIC API access. Contains {runtime} as placeholder for the runtime identifier. NOTE: Not published. Pre-work to support EIC — do not use productively. Subject to change."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download Partner Directory from Cloud Integration
+      id: download
+      uses: ./cicd-btp-insuite/.github/actions/download-pid
+      with:
+        bearer-token: ${{ inputs.bearer-token }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        partner-id: ${{ inputs.partner-id }}
+        output-dir: /tmp/pd-sync
+
+    - name: Sync to Edge Integration Cell Runtimes
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        EIC_RUNTIMES: ${{ inputs.eic-runtimes }}
+        EIC_URL_TEMPLATE: ${{ inputs.eic-url-template }}
+        PARTNERID: ${{ inputs.partner-id }}
+        INPUT_DIR: /tmp/pd-sync
+      run: |
+        set -euo pipefail
+        
+        echo "========================================"
+        echo "🔄 Syncing Partner Directory to Edge Integration Cells"
+        echo "========================================"
+        echo "Partner ID: $PARTNERID"
+        echo "EIC Runtimes: $EIC_RUNTIMES"
+        echo "Input Directory: $INPUT_DIR"
+        echo "----------------------------------------"
+        
+        # Parse comma-separated EIC runtimes
+        IFS=',' read -ra EIC_ARRAY <<< "$EIC_RUNTIMES"
+        
+        EIC_SUCCESS_COUNT=0
+        EIC_FAILURE_COUNT=0
+        
+        for eic_runtime in "${EIC_ARRAY[@]}"; do
+          # Trim whitespace
+          eic_runtime=$(echo "$eic_runtime" | xargs)
+          
+          if [[ -z "$eic_runtime" ]]; then
+            continue
+          fi
+          
+          echo ""
+          echo "📍 Syncing to EIC: $eic_runtime"
+          echo "-----------------------------------------"
+          
+          if [[ -z "$EIC_URL_TEMPLATE" ]]; then
+            echo "❌ eic-url-template is required when eic-runtimes is set. Configure BTP_EIC_URL_TEMPLATE (URL path not yet published, subject to change)."
+            exit 1
+          fi
+          EIC_PATH="${EIC_URL_TEMPLATE//\{runtime\}/$eic_runtime}"
+          EIC_ENDPOINT="$BTP_API_URL$EIC_PATH"
+          EIC_ERRORS=0
+          
+          # Sync each Partner Directory type
+          for type in "AlternativePartners" "StringParameters" "AuthorizedUsers" "BinaryParameters"; do
+            JSON_FILE="$INPUT_DIR/$type.json"
+            
+            if [[ ! -f "$JSON_FILE" ]]; then
+              echo "   ⚠️ $type: JSON file not found, skipping"
+              continue
+            fi
+            
+            ENTRY_COUNT=$(jq '.d.results | length' "$JSON_FILE" 2>/dev/null || echo "0")
+            
+            if [[ "$ENTRY_COUNT" == "0" ]]; then
+              echo "   ⏭️ $type: No entries to sync"
+              continue
+            fi
+            
+            echo "   📤 $type: Syncing $ENTRY_COUNT entries..."
+            
+            # Process each entry
+            SUCCESS=0
+            FAILED=0
+            
+            for ((i=0; i<$ENTRY_COUNT; i++)); do
+              ENTRY=$(jq -c ".d.results[$i] | del(.__metadata, .Hexagency, .Hexscheme, .Hexid, .LastModifiedBy, .LastModifiedTime, .CreatedBy, .CreatedTime)" "$JSON_FILE")
+              
+              RESPONSE=$(mktemp)
+              HTTP_STATUS=$(curl -s -w "%{http_code}" -X POST "$EIC_ENDPOINT/$type" \
+                -H "Authorization: $BEARER_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -d "$ENTRY" \
+                -o "$RESPONSE") || {
+                echo "      ❌ Network error for entry $((i+1))"
+                FAILED=$((FAILED + 1))
+                rm -f "$RESPONSE"
+                continue
+              }
+              
+              RESPONSE_BODY=$(cat "$RESPONSE" 2>/dev/null || echo "")
+              rm -f "$RESPONSE"
+              
+              if [[ "$HTTP_STATUS" == "201" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
+                SUCCESS=$((SUCCESS + 1))
+              elif [[ "$HTTP_STATUS" == "409" ]]; then
+                # Entry already exists - considered success
+                SUCCESS=$((SUCCESS + 1))
+              else
+                echo "      ⚠️ Entry $((i+1)) failed with HTTP $HTTP_STATUS"
+                echo "      📋 URL: $EIC_ENDPOINT/$type"
+                echo "      📋 Request body: $ENTRY"
+                echo "      📋 Response body: $RESPONSE_BODY"
+                FAILED=$((FAILED + 1))
+              fi
+            done
+            
+            if [[ $FAILED -eq 0 ]]; then
+              echo "      ✅ $type: $SUCCESS/$ENTRY_COUNT entries synced"
+            else
+              echo "      ⚠️ $type: $SUCCESS succeeded, $FAILED failed"
+              EIC_ERRORS=$((EIC_ERRORS + FAILED))
+            fi
+          done
+          
+          if [[ $EIC_ERRORS -eq 0 ]]; then
+            echo "   ✅ EIC $eic_runtime: Sync completed successfully"
+            EIC_SUCCESS_COUNT=$((EIC_SUCCESS_COUNT + 1))
+          else
+            echo "   ⚠️ EIC $eic_runtime: Sync completed with $EIC_ERRORS errors"
+            EIC_FAILURE_COUNT=$((EIC_FAILURE_COUNT + 1))
+          fi
+        done
+        
+        echo ""
+        echo "========================================"
+        echo "📊 EIC Sync Summary"
+        echo "========================================"
+        echo "Partner ID: $PARTNERID"
+        echo "✅ Successful EICs: $EIC_SUCCESS_COUNT"
+        echo "⚠️ EICs with errors: $EIC_FAILURE_COUNT"
+        echo "========================================"
+        
+        if [[ $EIC_SUCCESS_COUNT -eq 0 ]] && [[ ${#EIC_ARRAY[@]} -gt 0 ]]; then
+          echo "❌ All EIC syncs failed"
+          exit 1
+        fi

@@ -1,6 +1,6 @@
 # 📋 Manage Release Pull Request GitHub Action
 
-Finds or creates a PR from a source to target branch, checks mergeability, and performs a squash merge.
+Finds or creates a PR from a source to target branch, checks mergeability, and performs a merge commit (preserving individual commit history).
 
 ---
 
@@ -10,7 +10,7 @@ This action manages the entire lifecycle of a release pull request:
 1. **Searches** for an existing PR with a deterministic title (for restart detection)
 2. **Creates** a new PR if none exists
 3. **Checks** if the PR can be automatically merged (no conflicts)
-4. **Squash-merges** the PR into the target branch
+4. **Merges** the PR into the target branch (preserving individual commits and authors)
 
 If the PR has merge conflicts, the action fails with a clear error message. The PR remains open so the user can resolve conflicts and restart the workflow.
 
@@ -72,7 +72,7 @@ jobs:
 - **Conflict Resolution**: If the PR has conflicts, resolve them manually on the source branch, then restart the workflow. The action will find the existing PR and retry the merge.
 - **No Changes**: If the source branch has no commits ahead of the target branch (i.e., nothing to release), the action exits successfully with `pr-state=no-changes` instead of failing. No PR is created.
 - **Already Merged**: If the PR is already merged (restart after successful merge), the action reports success and returns the existing merge SHA.
-- **Squash Merge**: The action always uses squash merge to keep the main branch history clean.
+- **Merge Method**: The action uses a merge commit (not squash) to preserve individual commit history and author attribution on the main branch. Each release is marked by a merge commit.
 - **GitHub Enterprise Support**: The action auto-detects the GitHub server hostname and works with GitHub Enterprise instances.
 
 ---

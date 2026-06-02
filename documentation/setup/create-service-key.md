@@ -2,7 +2,7 @@
 
 This guide explains how to create a service key that allows GitHub Workflows to interact with BTP APIs.
 
-> **Note:** Repeat these steps for every tenant in your landscape (DEV, TST, PRD).
+> **Note:** Repeat these steps for every tenant in your landscape. **DEV** and **TST** are required; additional environments (e.g. PRD) are optional.
 
 ---
 

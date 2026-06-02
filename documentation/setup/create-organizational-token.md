@@ -1,5 +1,13 @@
 # Create Organizational Token
 
+> **⚠️ Backward compatibility only — not required for new installations**
+>
+> The sync workflow and all new admin workflows **require GitHub Apps** (Path A). PATs are only supported for workflows that were already delivered and running before the GitHub Apps migration.
+>
+> For new installations, skip this page. Configure the consumer bot app (`GIT_GITHUB_APP_ID` + `GIT_GITHUB_APP_PRIVATE_KEY`) instead — see [Setup GIT Environment → Option A: GitHub Apps](setup-git-env.md).
+
+---
+
 ## Overview
 
 The CI/CD workflows verify user authorization at the start of every execution. This authorization check relies on the two teams created in the previous chapter:

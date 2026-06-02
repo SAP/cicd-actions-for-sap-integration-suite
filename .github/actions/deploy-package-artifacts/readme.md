@@ -12,12 +12,13 @@ This action processes a deployment task JSON file and sequentially deploys or un
 
 ## ⚙️ Inputs
 
-| Name         | Required | Description                                                     |
-|--------------|----------|-----------------------------------------------------------------|
-| bearer-token | ✅ Yes   | Bearer token to authenticate with SAP BTP APIs.                |
-| btp-api-url  | ✅ Yes   | Base URL for SAP BTP Integration Suite APIs.                   |
-| file         | ✅ Yes   | Path to JSON file containing deploytasks.                      |
-| action       | ✅ Yes   | Deployment action: `Deploy` or `Undeploy`.                     |
+| Name                | Required | Description                                                     |
+|---------------------|----------|-----------------------------------------------------------------|
+| bearer-token        | ✅ Yes   | Bearer token to authenticate with SAP BTP APIs.                |
+| btp-api-url         | ✅ Yes   | Base URL for SAP BTP Integration Suite APIs.                   |
+| file                | ✅ Yes   | Path to JSON file containing deploytasks.                      |
+| action              | ✅ Yes   | Deployment action: `Deploy` or `Undeploy`.                     |
+| enable-set-log-level | ❌ No   | Set to `false` to disable MPL log level setting after deployment. Default: `true`. Controlled by the `BTP_SET_LOG_LEVEL` GitHub variable. Disable if the undocumented log level API breaks. |
 
 ---
 
@@ -75,7 +76,7 @@ The action reads a deploytask JSON file. Integration flow entries may include op
 | name       | ✅ Yes   | Artifact name (for logging)                                    |
 | type       | ✅ Yes   | Artifact type: `Integration`, `MessageMapping`, `ScriptCollection`, `ValueMapping` |
 | action     | ✅ Yes   | Action: `deploy` or `undeploy`                                 |
-| loglevel   | ❌ No    | Effective log level for the artifact (e.g., `INFO`, `ERROR`, `NONE`). Currently logged only. |
+| loglevel   | ❌ No    | MPL log level to apply after deployment (`ERROR`, `WARN`, `NONE`). `INFO` is skipped (it is the default after deployment). Uses an undocumented internal API — see `enable-set-log-level`. |
 | runtimes   | ❌ No    | Effective runtimes for the artifact (e.g., `iflmap`, `eicmbag`). Currently logged only. |
 
 ---

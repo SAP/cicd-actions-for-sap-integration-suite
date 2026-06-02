@@ -1,80 +1,9 @@
-# Reusable GitHub Workflows for SAP BTP Integration Suite CI/CD
+# Reusable Workflows for SAP BTP Integration Suite CI/CD
 
-> **For a high-level project introduction and overview, see the main [README](../../README.md).**
+> For the consumer-facing workflow reference (template workflows you copy into your repository), see [templates/README.md](../../templates/README.md).
+> For project overview, see the main [README](../../README.md).
 
-## Table of Contents
-- [Introduction](#introduction)
-- [Quick Start](#quick-start)
-- [Available Workflows](#available-workflows)
-- [Prerequisites](#prerequisites)
-- [Workflow Reference](#workflow-reference)
-- [Common Parameters](#common-parameters)
-- [Examples](#examples)
-
----
-
-## Introduction
-
-This repository provides **reusable GitHub Actions workflows** for automating SAP BTP Integration Suite CI/CD operations. These workflows enable you to:
-
-- 📥 **Download** integration packages from BTP to Git
-- 📤 **Deploy** integration packages to BTP environments
-- 🗑️ **Delete** packages from BTP and Git
-- 📊 **Analyze** changes between Git references
-- ⚙️ **Update** externalized iFlow parameters
-
-### Key Concepts
-
-**Integration Package Management**
-> The smallest entity managed by these workflows is the **integration package**. All operations (deploy, download, delete) are performed at the package level, which may contain one or more iFlows.
-
-**Supported Content Types**
-- **IntegrationPackages**: Standard integration packages containing iFlows
-- **PartnerDirectory**: Partner directory entries for B2B integration
-
-**Landscape Support**
-- Supports multi-tier landscapes (Development, Test, Production)
-- Each environment requires its own credentials and endpoints
-- Use GitHub Environments to manage environment-specific configurations
-
----
-
-## Quick Start
-
-### 1. Set Up GitHub Environments
-
-Create GitHub Environments in your repository (e.g., `DEV`, `TST`, `PRD`) and configure the following secrets:
-
-| Secret | Description |
-|--------|-------------|
-| `BTP_API_USER` | BTP Service Key (ClientID) for OAuth token |
-| `BTP_API_PASSWORD` | BTP Service Key password |
-| `BTP_TEC_USER` | BTP technical user with Integration Suite access |
-| `BTP_TEC_PASSWORD` | BTP technical user password |
-| `BTP_TOKEN_URL` | OAuth token endpoint URL |
-| `BTP_API_URL` | BTP Integration Suite API base URL |
-| `GIT_CICD_TOKEN` | GitHub Personal Access Token for CI/CD operations |
-
-### 2. Call Workflows from Your Repository
-
-Reference the workflows in your `.github/workflows` directory:
-
-```yaml
-jobs:
-  deploy:
-    uses: <owner>/<this-repo>/.github/workflows/delete-upload.yml@main
-    with:
-      workflow-ref: 'main'
-      target-env: 'DEV'
-      source-ref: 'main'
-      integrationpackages-upload-ids: 'MyPackageId1,MyPackageId2'
-      # ... other parameters
-    secrets:
-      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
-      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
-```
-
-> **Tip:** See the [examples](../../examples/README.md) folder for complete workflow templates you can copy and customize.
+This folder contains the **reusable workflows** that are called by the template workflows in consuming repositories. They are not meant to be triggered directly — they are invoked via `uses:` references from consumer workflow templates.
 
 ---
 
@@ -82,27 +11,31 @@ jobs:
 
 | Workflow | Purpose |
 |----------|---------|
-| **analyze-changes.yml** | Analyze changes between two Git references and optionally deploy |
-| **delete-upload.yml** | Deploy or delete integration packages and partner directory entries |
-| **download-btp-to-git.yml** | Download integration content from BTP and commit to Git |
-| **delete-dir-from-git.yml** | Remove a package directory from Git repository |
-| **update-externalized-iflow-parameters.yml** | Update and deploy iFlow with new externalized parameters |
+| [analyze-changes.yml](#analyze-changesyml) | Compare two Git references and identify changed packages |
+| [delete-upload.yml](#delete-uploadyml) | Deploy or delete integration packages and Partner Directory entries |
+| [download-btp-to-git.yml](#download-btp-to-gityml) | Download integration content from BTP and commit to Git |
+| [delete-dir-from-git.yml](#delete-dir-from-gityml) | Remove a package directory from the Git repository |
+| [update-externalized-iflow-parameters.yml](#update-externalized-iflow-parametersyml) | Update externalized iFlow parameters and optionally deploy |
+| [btp-download-access-policies-to-git.yml](#btp-download-access-policies-to-gityml) | Download Access Policies from BTP and commit to Git |
+| [download-access-policies-to-git.yml](#download-access-policies-to-gityml) | Download Access Policies from a selected environment to a Git branch |
+| [delete-upload-access-policies.yml](#delete-upload-access-policiesyml) | Upload or delete Access Policies in BTP |
+| [sync-partnerdirectory-to-eic.yml](#sync-partnerdirectory-to-eicyml) | Sync Partner Directory entries to Edge Integration Cell runtimes |
+| [create-release.yml](#create-releaseyml) | Create a release from the development branch |
 
 ---
 
-## Prerequisites
+## Authentication
 
-### Required Access
-- ✅ GitHub repository with Actions enabled
-- ✅ SAP BTP Integration Suite tenant
-- ✅ BTP technical user with appropriate permissions
-- ✅ OAuth service key for BTP API access
+All workflows support **GitHub Apps** (preferred) with PAT fallback for backward compatibility.
 
-### Recommended Setup
-- Use **GitHub Environments** for environment-specific configurations
-- Name environments to match BTP landscape stages (e.g., `DEV`, `TST`, `PRD`)
-- Store all credentials as GitHub secrets
-- Use branch protection rules for production deployments
+| Secret | Description |
+|--------|-------------|
+| `GIT_CICD_APP_PRIVATE_KEY` | PEM private key of the CICD reader app — preferred for `cicd-actions` checkout |
+| `GIT_CICD_TOKEN` | PAT fallback for CICD repo access (backward compatibility only) |
+| `GIT_GITHUB_APP_PRIVATE_KEY` | PEM private key of the consumer bot app — used for consumer repo operations |
+| `GIT_SUITE_TOKEN` | PAT fallback for consumer repo operations (backward compatibility only) |
+
+For setup details see [Setup GIT Environment](../../documentation/setup/setup-git-env.md).
 
 ---
 
@@ -110,16 +43,14 @@ jobs:
 
 ### analyze-changes.yml
 
-Compares two Git references (branches/tags) to identify changed integration packages and optionally deploys them.
+Compares two Git references to identify changed integration packages and Partner Directory entries. Optionally triggers deployment of detected changes.
 
-**Use Case:** Release deployments, automated change detection
-
-#### Inputs
+**Inputs**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `workflow-ref` | ✅ | Git reference where workflow runs (e.g., `main`) |
-| `target-env` | ✅ | Target environment (e.g., `DEV`, `TST`, `PRD`) |
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `target-env` | ✅ | Target deployment environment |
 | `base-ref` | ✅ | Base Git reference for comparison |
 | `target-ref` | ✅ | Target Git reference for comparison |
 | `perform-deploy` | ❌ | Deploy after analysis (`true`/`false`) |
@@ -129,322 +60,218 @@ Compares two Git references (branches/tags) to identify changed integration pack
 | `btp-api-url` | ✅ | BTP API base URL |
 | `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-#### Secrets
-- `BTP_API_PASSWORD`
-- `BTP_TEC_PASSWORD`
-- `GIT_CICD_TOKEN`
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
-#### Example
-```yaml
-jobs:
-  analyze_and_deploy:
-    uses: owner/cicd-insuite/.github/workflows/analyze-changes.yml@main
-    with:
-      workflow-ref: 'main'
-      target-env: 'PRD'
-      base-ref: 'v1.0.0'
-      target-ref: 'v1.1.0'
-      perform-deploy: 'true'
-      btp-api-user: ${{ vars.BTP_API_USER }}
-      btp-tec-user: ${{ vars.BTP_TEC_USER }}
-      btp-token-url: ${{ vars.BTP_TOKEN_URL }}
-      btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/cicd-intsuite'
-    secrets:
-      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
-      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
-      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
-```
+**Outputs:** `package_upload_csv_content`, `package_delete_csv_content`, `pid_upload_csv_content`, `pid_delete_csv_content`
 
 ---
 
 ### delete-upload.yml
 
-Deploys or deletes integration packages and partner directory entries in BTP.
+Deploys or deletes integration packages and Partner Directory entries in BTP.
 
-**Use Case:** Manual/automated deployments, cleanup operations
-
-#### Inputs
+**Inputs**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `workflow-ref` | ✅ | Git reference where workflow runs |
-| `target-env` | ✅ | Target environment |
-| `source-ref` | ✅ | Git source reference containing packages |
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `target-env` | ✅ | Target deployment environment |
+| `source-ref` | ✅ | Git source reference containing the packages |
 | `integrationpackages-upload-ids` | ❌ | Comma-separated package IDs to deploy |
 | `integrationpackages-delete-ids` | ❌ | Comma-separated package IDs to delete |
-| `partnerdirectory-upload-ids` | ❌ | Comma-separated partner directory IDs to deploy |
-| `partnerdirectory-delete-ids` | ❌ | Comma-separated partner directory IDs to delete |
+| `partnerdirectory-upload-ids` | ❌ | Comma-separated Partner Directory IDs to deploy |
+| `partnerdirectory-delete-ids` | ❌ | Comma-separated Partner Directory IDs to delete |
+| `attach-zip-only` | ❌ | Attach package as workflow artifact ZIP without deploying to BTP (default: `false`) |
+| `exclude-iflow-ids` | ❌ | Comma-separated iFlow IDs to exclude from deployment (manual override) |
+| `base-ref` | ❌ | Base Git reference passed to the customer exit for context |
+| `cx-iflow-exclusions` | ❌ | Run `cx-derive-iflow-exclusions` customer exit per deployment job (`true`/`false`) |
+| `cx-repository` | ❌ | Remote extension repository for customer exits (`org/repo`) |
+| `cx-repository-ref` | ❌ | Git ref of the extension repository (default: `main`) |
+| `btp-eic-runtimes` | ❌ | Comma-separated EIC runtime IDs — syncs Partner Directory to EIC when set |
+| `btp-eic-url-template` | ❌ | EIC API URL template (not yet published — required when `btp-eic-runtimes` is set) |
+| `enable-set-log-level` | ❌ | Set MPL log level after deployment via undocumented API (default: `true`) |
 | `btp-api-user` | ✅ | BTP OAuth client ID |
 | `btp-tec-user` | ✅ | BTP technical username |
 | `btp-token-url` | ✅ | BTP OAuth token URL |
 | `btp-api-url` | ✅ | BTP API base URL |
 | `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-#### Secrets
-- `BTP_API_PASSWORD`
-- `BTP_TEC_PASSWORD`
-- `GIT_CICD_TOKEN`
-
-#### Example
-```yaml
-jobs:
-  deploy_packages:
-    uses: owner/cicd-intsuite/.github/workflows/delete-upload.yml@main
-    with:
-      workflow-ref: 'main'
-      target-env: 'DEV'
-      source-ref: 'develop'
-      integrationpackages-upload-ids: 'Package1~ID1,Package2~ID2'
-      integrationpackages-delete-ids: ''
-      partnerdirectory-upload-ids: ''
-      partnerdirectory-delete-ids: ''
-      btp-api-user: ${{ vars.BTP_API_USER }}
-      btp-tec-user: ${{ vars.BTP_TEC_USER }}
-      btp-token-url: ${{ vars.BTP_TOKEN_URL }}
-      btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/cicd-intsuite'
-    secrets:
-      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
-      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
-      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
-```
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
 ### download-btp-to-git.yml
 
-Downloads integration packages or partner directory entries from BTP and commits them to Git.
+Downloads integration packages or Partner Directory entries from BTP and commits them to a Git branch.
 
-**Use Case:** Sync BTP content to Git, backup, initial repository setup
-
-#### Inputs
+**Inputs**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `workflow-ref` | ✅ | Git reference where workflow runs |
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
 | `source-env` | ✅ | Source BTP environment to download from |
 | `target-ref` | ✅ | Git branch to commit to |
 | `ids` | ✅ | Comma-separated IDs to download |
 | `mode` | ✅ | `IntegrationPackages` or `PartnerDirectory` |
-| `commit-message` | ✅ | Commit message for Git |
+| `commit-message` | ✅ | Commit message |
 | `btp-api-user` | ✅ | BTP OAuth client ID |
 | `btp-tec-user` | ✅ | BTP technical username |
 | `btp-token-url` | ✅ | BTP OAuth token URL |
 | `btp-api-url` | ✅ | BTP API base URL |
 | `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-#### Secrets
-- `BTP_API_PASSWORD`
-- `BTP_TEC_PASSWORD`
-- `GIT_CICD_TOKEN`
-
-#### Example
-```yaml
-jobs:
-  download_from_btp:
-    uses: owner/cicd-intsuite/.github/workflows/download-btp-to-git.yml@main
-    with:
-      workflow-ref: 'main'
-      source-env: 'DEV'
-      target-ref: 'main'
-      ids: 'MyPackage~PackageId'
-      mode: 'IntegrationPackages'
-      commit-message: 'Download MyPackage from DEV'
-      btp-api-user: ${{ vars.BTP_API_USER }}
-      btp-tec-user: ${{ vars.BTP_TEC_USER }}
-      btp-token-url: ${{ vars.BTP_TOKEN_URL }}
-      btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/cicd-intsuite'
-    secrets:
-      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
-      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
-      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
-```
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
 ### delete-dir-from-git.yml
 
-Removes an integration package or partner directory folder from the Git repository.
+Removes an integration package or Partner Directory folder from the Git repository.
 
-**Use Case:** Clean up obsolete packages, repository maintenance
-
-#### Inputs
+**Inputs**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `workflow-ref` | ✅ | Git reference where workflow runs |
-| `id` | ✅ | ID of package/directory to delete |
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `id` | ✅ | ID of the package or directory to delete |
 | `mode` | ✅ | `IntegrationPackages` or `PartnerDirectory` |
 | `source-ref` | ✅ | Git branch to delete from |
-| `commit-message` | ✅ | Commit message for deletion |
+| `commit-message` | ✅ | Commit message |
 | `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-#### Secrets
-- `GIT_CICD_TOKEN`
-
-#### Example
-```yaml
-jobs:
-  delete_from_git:
-    uses: owner/cicd-intsuite/.github/workflows/delete-dir-from-git.yml@main
-    with:
-      workflow-ref: 'main'
-      id: 'ObsoletePackage~PackageId'
-      mode: 'IntegrationPackages'
-      source-ref: 'main'
-      commit-message: 'Remove obsolete package'
-      git-cicd-orgrepo: 'owner/cicd-intsuite'
-    secrets:
-      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
-```
+**Secrets:** `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
 ### update-externalized-iflow-parameters.yml
 
-Updates externalized parameters for a specific iFlow and optionally deploys it.
+Updates externalized parameters for a specific iFlow and optionally deploys it based on its deployment configuration.
 
-**Use Case:** Update configuration parameters, environment-specific settings
-
-#### Inputs
+**Inputs**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `workflow-ref` | ✅ | Git reference where workflow runs |
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
 | `target-env` | ✅ | Target environment |
 | `iflow-id` | ✅ | iFlow ID to update |
-| `iflow-deploy` | ✅ | Deploy after update (`true`/`false`) |
-| `source-ref` | ✅ | Git reference with parameter values |
+| `evaluate-deployment` | ✅ | Evaluate `Deployment_*.json` and trigger deployment based on its configuration (`true`/`false`) |
+| `source-ref` | ✅ | Git reference containing the parameter values |
+| `enable-set-log-level` | ❌ | Set MPL log level after deployment via undocumented API (default: `true`) |
 | `btp-api-user` | ✅ | BTP OAuth client ID |
 | `btp-tec-user` | ✅ | BTP technical username |
 | `btp-token-url` | ✅ | BTP OAuth token URL |
 | `btp-api-url` | ✅ | BTP API base URL |
 | `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-#### Secrets
-- `BTP_API_PASSWORD`
-- `BTP_TEC_PASSWORD`
-- `GIT_CICD_TOKEN`
-
-#### Example
-```yaml
-jobs:
-  update_parameters:
-    uses: owner/cicd-intsuite/.github/workflows/update-externalized-iflow-parameters.yml@main
-    with:
-      workflow-ref: 'main'
-      target-env: 'TST'
-      iflow-id: 'MyIFlow'
-      iflow-deploy: 'true'
-      source-ref: 'main'
-      btp-api-user: ${{ vars.BTP_API_USER }}
-      btp-tec-user: ${{ vars.BTP_TEC_USER }}
-      btp-token-url: ${{ vars.BTP_TOKEN_URL }}
-      btp-api-url: ${{ vars.BTP_API_URL }}
-      git-cicd-orgrepo: 'owner/cicd-intsuite'
-    secrets:
-      BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
-      BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
-      GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
-```
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
-## Common Parameters
+### btp-download-access-policies-to-git.yml
 
-### BTP Credentials
+Downloads one or more Access Policies and their artifact references from BTP and commits them to a Git branch. Called by the `btp-download-upload-access-policies` template workflow (DEV → TST flow).
 
-**`btp-api-user`** & **`BTP_API_PASSWORD`**
-- OAuth client credentials from BTP service key
-- Used for API authentication
+**Inputs**
 
-**`btp-tec-user`** & **`BTP_TEC_PASSWORD`**
-- Technical user with Integration Suite access policies
-- Used for content deployment operations
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `source-env` | ✅ | Source BTP environment to download from |
+| `target-ref` | ✅ | Git branch to commit to |
+| `names` | ✅ | Comma-separated Access Policy names to download |
+| `commit-message` | ✅ | Commit message |
+| `btp-api-user` | ✅ | BTP OAuth client ID |
+| `btp-tec-user` | ✅ | BTP technical username |
+| `btp-token-url` | ✅ | BTP OAuth token URL |
+| `btp-api-url` | ✅ | BTP API base URL |
+| `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-**`btp-token-url`**
-- OAuth token endpoint from BTP service key
-- Example: `https://<subdomain>.authentication.<region>.hana.ondemand.com/oauth/token`
-
-**`btp-api-url`**
-- Integration Suite API base URL
-- Example: `https://<tenant>.it-cpi<region>.cfapps.<region>.hana.ondemand.com/api/v1`
-
-### Git Parameters
-
-**`git-cicd-orgrepo`**
-- The CI/CD repository containing these workflows
-- Format: `owner/repository-name`
-
-**`GIT_CICD_TOKEN`**
-- GitHub Personal Access Token with repository access
-- Required permissions: `repo` scope
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
-## Examples
+### download-access-policies-to-git.yml
 
-For complete, ready-to-use workflow examples, see the [examples](../../examples/README.md) folder. It includes:
+Downloads Access Policies from a selected environment to a Git branch. Called by the `btp-download-access-policies-to-git` template workflow (free environment selection).
 
-- **btp-deploy-manager.yml** - Comprehensive deployment orchestration
-- **btp-download-packages-to-git.yml** - Batch download from BTP
-- **btp-delete-package-from-btp-and-git.yml** - Complete cleanup workflow
-- **btp-update-externalized-iflow-parameters.yml** - Parameter management
+**Inputs**
 
----
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `source-env` | ✅ | Source BTP environment to download from |
+| `target-ref` | ✅ | Git branch to commit to |
+| `names` | ✅ | Comma-separated Access Policy names to download |
+| `commit-message` | ✅ | Commit message |
+| `btp-api-user` | ✅ | BTP OAuth client ID |
+| `btp-tec-user` | ✅ | BTP technical username |
+| `btp-token-url` | ✅ | BTP OAuth token URL |
+| `btp-api-url` | ✅ | BTP API base URL |
+| `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-## Best Practices
-
-### Security
-- ✅ Always use GitHub Environments for environment-specific secrets
-- ✅ Never hardcode credentials in workflow files
-- ✅ Use branch protection rules for production environments
-- ✅ Rotate credentials regularly
-
-### Organization
-- ✅ Use consistent naming for environments across BTP and GitHub
-- ✅ Keep integration package IDs consistent between environments
-- ✅ Use meaningful commit messages for traceability
-- ✅ Tag releases for production deployments
-
-### CI/CD Strategy
-- ✅ Test in DEV before promoting to TST/PRD
-- ✅ Use `analyze-changes.yml` for release deployments
-- ✅ Implement approval gates for production deployments
-- ✅ Monitor deployment logs and set up notifications
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
-## Troubleshooting
+### delete-upload-access-policies.yml
 
-### Common Issues
+Uploads or deletes Access Policies in BTP. Upload always performs a delete-then-recreate to ensure a clean state.
 
-**Authentication Errors**
-- Verify BTP credentials are correct and not expired
-- Check token URL and API URL are correct for your BTP region
-- Ensure technical user has necessary Integration Suite permissions
+**Inputs**
 
-**Package Not Found**
-- Verify package ID matches exactly (case-sensitive)
-- Check the package exists in the source environment
-- Ensure mode (`IntegrationPackages` or `PartnerDirectory`) is correct
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `target-env` | ✅ | Target environment |
+| `source-ref` | ✅ | Git source reference containing the policy files |
+| `accesspolicies-upload-names` | ❌ | Comma-separated Access Policy names to upload |
+| `accesspolicies-delete-names` | ❌ | Comma-separated Access Policy names to delete |
+| `btp-api-user` | ✅ | BTP OAuth client ID |
+| `btp-tec-user` | ✅ | BTP technical username |
+| `btp-token-url` | ✅ | BTP OAuth token URL |
+| `btp-api-url` | ✅ | BTP API base URL |
+| `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
 
-**Git Errors**
-- Verify `GIT_CICD_TOKEN` has sufficient permissions
-- Check branch protection rules aren't blocking commits
-- Ensure target branch exists
-
----
-
-## Additional Resources
-
-- [SAP BTP Integration Suite Documentation](https://help.sap.com/docs/SAP_CLOUD_PLATFORM_INTEGRATION_SUITE)
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [Main Project README](../../README.md)
-- [Example Workflows](../../examples/README.md)
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
 
 ---
 
-**Questions or Issues?** Please refer to the main repository documentation or contact your SAP BTP administrator.
+### sync-partnerdirectory-to-eic.yml
+
+Syncs Partner Directory entries from a Cloud Integration environment directly to configured Edge Integration Cell runtimes — without storing data in Git.
+
+**Inputs**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `target-env` | ✅ | Source Cloud Integration environment |
+| `partnerdirectory-ids` | ✅ | Comma-separated Partner IDs to sync to EIC |
+| `btp-eic-runtimes` | ✅ | Comma-separated EIC runtime identifiers |
+| `btp-eic-url-template` | ❌ | EIC API URL template (not yet published — required when `btp-eic-runtimes` is set) |
+| `btp-api-user` | ✅ | BTP OAuth client ID |
+| `btp-tec-user` | ✅ | BTP technical username |
+| `btp-token-url` | ✅ | BTP OAuth token URL |
+| `btp-api-url` | ✅ | BTP API base URL |
+| `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
+
+**Secrets:** `BTP_API_PASSWORD`, `BTP_TEC_PASSWORD`, `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`)
+
+---
+
+### create-release.yml
+
+Creates a release from the development branch: squash-merges into main, creates a Git tag and GitHub release, then re-creates the development branch from main. Fully restart-safe. Supports a simulation mode to check merge feasibility without making changes.
+
+**Inputs**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workflow-ref` | ✅ | Git reference to check out the cicd-actions repo from |
+| `release-name` | ✅ | Name/tag for the new release |
+| `development-branch` | ❌ | Development branch name (default: `development`) |
+| `main-branch` | ❌ | Main/production branch name (default: `main`) |
+| `simulation` | ❌ | Check mergeability only, no changes made (default: `false`) |
+| `git-cicd-orgrepo` | ✅ | CI/CD repository (`owner/repo`) |
+
+**Secrets:** `GIT_CICD_APP_PRIVATE_KEY` (or `GIT_CICD_TOKEN`), `GIT_GITHUB_APP_PRIVATE_KEY` (or `GIT_SUITE_TOKEN`)

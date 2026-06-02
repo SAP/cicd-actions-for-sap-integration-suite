@@ -1,0 +1,632 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-05-05 - Initial release
+# 1.1.1 - 2026-05-12 - GitHub App authentication with cross-org token support (O.Weng)
+# 1.2.0 - 2026-05-18 - Scenario-based template filtering with install/remove workflow inputs (O.Weng)
+# 1.3.0 - 2026-05-19 - Scenario lifecycle management: dynamic dropdowns, orphan auto-removal and stale file cleanup (O.Weng)
+# 1.3.2 - 2026-05-20 - Mandatory validation for GIT_CICD_REF and BTP_ADMIN_TEAM_SLUG (O.Weng)
+# 1.3.3 - 2026-05-21 - Graceful self-sync fallback to raw download; split GitHub App into CICD reader and consumer bot; add [skip ci] to sync commit (O.Weng)
+# 1.3.6 - 2026-05-22 - Checkout CICD actions repo at source-ref before authorization check, removing hardcoded @v1 (O.Weng)
+# 1.4.0 - 2026-05-27 - Split monolithic sync step into discrete named steps; dynamic target-env injection via discover-environments (O.Weng)
+#
+
+name: (Admin) Sync CICD Workflow Templates
+
+# Pulls the latest workflow templates from the central cicd-actions repository
+# and pushes changes directly to the default branch. Customer-built workflows are never touched.
+# To protect a customised SAP template, add its filename to
+# .github/cicd-sync-exclusions.txt (one filename per line, # = comment).
+# To manage which template sets are active, use install-scenario / remove-scenario,
+# or edit .github/cicd-scenarios.txt directly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: "Ref to sync from (tag or branch). Defaults to GIT_CICD_REF variable."
+        required: false
+        type: string
+      install-scenario:
+        description: "Add a scenario to the active list. Empty = sync only."
+        required: false
+        type: choice
+        options:  #!cicd:install-options!
+          - ""
+      remove-scenario:
+        description: "Remove a scenario from the active list. Empty = sync only."
+        required: false
+        type: choice
+        options:  #!cicd:remove-options!
+          - ""
+  schedule:
+    - cron: '0 1 * * *'   # daily 01:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync Templates
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    steps:
+      # ─── GitHub App authentication (required) ───
+      - name: Validate GitHub App configuration
+        shell: bash
+        env:
+          APP_ID: ${{ vars.GIT_GITHUB_APP_ID }}
+          CICD_APP_ID: ${{ vars.GIT_CICD_APP_ID }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$APP_ID" ] && echo "🛑 GIT_GITHUB_APP_ID is not set. This workflow requires GitHub App authentication." && exit 1
+          echo "✅ GitHub App ID configured"
+          [ -z "$CICD_APP_ID" ] && echo "🛑 GIT_CICD_APP_ID is not set. Required for cross-org access to the CICD repository." && exit 1
+          echo "✅ CICD App ID configured"
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "✅ CICD ref: $CICD_REF"
+
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Generate GitHub App token — consumer org
+        id: app-token-suite
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Checkout data repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token-suite.outputs.token }}
+          fetch-depth: 1
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: true
+
+      - name: Checkout CICD actions
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          ref: ${{ inputs.source-ref || vars.GIT_CICD_REF }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          path: .cicd-actions
+          sparse-checkout: |
+            .github/actions/check-team-authorization
+            .github/actions/discover-environments
+          sparse-checkout-cone-mode: true
+
+      - name: Check release manager authorization
+        if: github.event_name == 'workflow_dispatch'
+        uses: ./.cicd-actions/.github/actions/check-team-authorization
+        with:
+          team-slug: ${{ vars.BTP_ADMIN_TEAM_SLUG }}
+          github-token: ${{ steps.app-token-suite.outputs.token }}
+
+      # ─── Sync ───
+      - name: Fetch scenario manifests
+        shell: bash
+        env:
+          GH_CICD_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          SOURCE_REF: ${{ inputs.source-ref || vars.GIT_CICD_REF }}
+          GIT_CICD_ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+        run: |
+          set -e
+
+          if [[ -z "$GIT_CICD_ORGREPO" ]]; then
+            echo "❌ GIT_CICD_ORGREPO variable is not set."
+            exit 1
+          fi
+
+          echo "Central repo : $GIT_CICD_ORGREPO"
+          echo "Source ref   : $SOURCE_REF"
+          echo "CICD token   : ${GH_CICD_TOKEN:0:8}... (len=${#GH_CICD_TOKEN})"
+
+          cicd_api_get() {
+            curl -s \
+              -H "Authorization: token $GH_CICD_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GIT_CICD_ORGREPO}/$1"
+          }
+
+          echo ""
+          echo "📦 Fetching scenario manifests ..."
+          SCENARIOS_INDEX=$(cicd_api_get "contents/templates/scenarios?ref=${SOURCE_REF}")
+          SCENARIO_COUNT=$(echo "$SCENARIOS_INDEX" | jq 'if type=="array" then length else 0 end')
+
+          MANIFESTS_JSON="[]"
+
+          if [[ "$SCENARIO_COUNT" -eq 0 ]]; then
+            echo "⚠️  No scenario manifests found at $SOURCE_REF."
+          else
+            while IFS= read -r fname; do
+              [[ "$fname" != *.json ]] && continue
+              raw=$(cicd_api_get "contents/templates/scenarios/${fname}?ref=${SOURCE_REF}" \
+                    | jq -r '.content // empty' | base64 -d 2>/dev/null) || true
+              [[ -z "$raw" ]] && echo "⚠️  Could not read $fname — skipping" && continue
+
+              sname=$(echo "$raw" | jq -r '.name  // empty')
+              [[ -z "$sname" ]] && continue
+
+              entry=$(echo "$raw" | jq -c '{
+                name:        (.name),
+                type:        (.type        // "additive"),
+                description: (.description // ""),
+                label:       (.label       // .name),
+                workflows:   (.workflows   // [])
+              }')
+              MANIFESTS_JSON=$(echo "$MANIFESTS_JSON" | jq --argjson e "$entry" '. + [$e]')
+              echo "   Loaded: $sname ($(echo "$entry" | jq -r '.type')) — $(echo "$entry" | jq -r '.label')"
+            done < <(echo "$SCENARIOS_INDEX" | jq -r '.[].name')
+          fi
+
+          echo "$MANIFESTS_JSON" > "$RUNNER_TEMP/cicd_manifests.json"
+          echo "✅ Wrote $(echo "$MANIFESTS_JSON" | jq 'length') manifest(s) to cicd_manifests.json"
+
+      - name: Manage active scenarios
+        shell: bash
+        env:
+          INSTALL_SCENARIO_LABEL: ${{ inputs.install-scenario }}
+          REMOVE_SCENARIO_LABEL: ${{ inputs.remove-scenario }}
+        run: |
+          set -e
+
+          MANIFESTS=$(cat "$RUNNER_TEMP/cicd_manifests.json")
+          SCENARIOS_FILE=".github/cicd-scenarios.txt"
+
+          # ── Install scenario ──
+          if [[ -n "$INSTALL_SCENARIO_LABEL" ]]; then
+            INSTALL_NAME=$(echo "$MANIFESTS" | jq -r --arg lbl "$INSTALL_SCENARIO_LABEL" \
+              '.[] | select(.label == $lbl) | .name' | head -1)
+            if [[ -z "$INSTALL_NAME" ]]; then
+              echo "❌ Unknown scenario: '$INSTALL_SCENARIO_LABEL'"
+              exit 1
+            fi
+            echo "📥 Installing scenario: $INSTALL_NAME"
+            already=false
+            if [[ -f "$SCENARIOS_FILE" ]]; then
+              while IFS= read -r line; do
+                [[ -z "$line" || "$line" == \#* ]] && continue
+                [[ "$(echo "$line" | awk '{print $1}')" == "$INSTALL_NAME" ]] && already=true && break
+              done < "$SCENARIOS_FILE"
+            fi
+            if $already; then
+              echo "   ℹ️  Already active — no change."
+            else
+              echo "$INSTALL_NAME" >> "$SCENARIOS_FILE"
+              echo "   ✅ Added to $SCENARIOS_FILE"
+            fi
+          fi
+
+          # ── Remove scenario ──
+          if [[ -n "$REMOVE_SCENARIO_LABEL" ]]; then
+            REMOVE_NAME=$(echo "$MANIFESTS" | jq -r --arg lbl "$REMOVE_SCENARIO_LABEL" \
+              '.[] | select(.label == $lbl) | .name' | head -1)
+            if [[ -z "$REMOVE_NAME" ]]; then
+              echo "❌ Unknown scenario: '$REMOVE_SCENARIO_LABEL'"
+              exit 1
+            fi
+            echo "🗑️  Removing scenario: $REMOVE_NAME"
+            if [[ ! -f "$SCENARIOS_FILE" ]]; then
+              echo "   ℹ️  No $SCENARIOS_FILE found — nothing to remove."
+            else
+              TMPFILE=$(mktemp)
+              found=false
+              while IFS= read -r line; do
+                sname=$(echo "$line" | awk '{print $1}')
+                if [[ "$sname" == "$REMOVE_NAME" ]]; then
+                  found=true; continue
+                fi
+                echo "$line" >> "$TMPFILE"
+              done < "$SCENARIOS_FILE"
+              if $found; then
+                mv "$TMPFILE" "$SCENARIOS_FILE"
+                echo "   ✅ Removed from $SCENARIOS_FILE"
+              else
+                rm -f "$TMPFILE"
+                echo "   ℹ️  Not found in active scenarios — no change."
+              fi
+            fi
+          fi
+
+          # ── Read or auto-detect active scenarios ──
+          ACTIVE_SCENARIOS=()
+          AUTODETECT=false
+
+          if [[ -f "$SCENARIOS_FILE" ]]; then
+            while IFS= read -r line; do
+              [[ -z "$line" || "$line" == \#* ]] && continue
+              ACTIVE_SCENARIOS+=("$(echo "$line" | awk '{print $1}')")
+            done < "$SCENARIOS_FILE"
+          else
+            echo ""
+            echo "🔍 No $SCENARIOS_FILE found — running auto-detection ..."
+            AUTODETECT=true
+            while IFS= read -r sname; do
+              matched=0
+              while IFS= read -r wf; do
+                [[ -f ".github/workflows/$wf" ]] && (( matched++ )) || true
+              done < <(echo "$MANIFESTS" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .workflows[]')
+              if [[ "$matched" -gt 0 ]]; then
+                ACTIVE_SCENARIOS+=("$sname")
+                echo "   Auto-detected: $sname ($matched workflows present)"
+              fi
+            done < <(echo "$MANIFESTS" | jq -r '.[].name')
+            if [[ "${#ACTIVE_SCENARIOS[@]}" -eq 0 ]]; then
+              echo "   ℹ️  No installed scenarios detected."
+            fi
+          fi
+
+          # ── Auto-remove orphaned scenarios ──
+          if [[ -f "$SCENARIOS_FILE" ]] && ! $AUTODETECT; then
+            TMPFILE=$(mktemp)
+            ORPHANED=()
+            while IFS= read -r line; do
+              [[ -z "$line" || "$line" == \#* ]] && { echo "$line" >> "$TMPFILE"; continue; }
+              sname=$(echo "$line" | awk '{print $1}')
+              if echo "$MANIFESTS" | jq -e --arg n "$sname" 'any(.[]; .name == $n)' > /dev/null; then
+                echo "$line" >> "$TMPFILE"
+              else
+                ORPHANED+=("$sname")
+                echo "🗑️  Scenario '$sname' no longer in central repo — auto-removing"
+              fi
+            done < "$SCENARIOS_FILE"
+            if [[ "${#ORPHANED[@]}" -gt 0 ]]; then
+              mv "$TMPFILE" "$SCENARIOS_FILE"
+              ACTIVE_SCENARIOS=()
+              while IFS= read -r line; do
+                [[ -z "$line" || "$line" == \#* ]] && continue
+                ACTIVE_SCENARIOS+=("$(echo "$line" | awk '{print $1}')")
+              done < "$SCENARIOS_FILE"
+            else
+              rm -f "$TMPFILE"
+            fi
+          fi
+
+          # ── Validate exclusive scenarios ──
+          EXCLUSIVE_COUNT=0
+          for sname in "${ACTIVE_SCENARIOS[@]}"; do
+            stype=$(echo "$MANIFESTS" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .type')
+            [[ "$stype" == "exclusive" ]] && (( EXCLUSIVE_COUNT++ )) || true
+          done
+          if [[ "$EXCLUSIVE_COUNT" -gt 1 ]]; then
+            echo "⚠️  Multiple exclusive scenarios are active. Use remove-scenario to deactivate the ones you don't need."
+          fi
+
+          # ── Write auto-detected cicd-scenarios.txt ──
+          if $AUTODETECT && [[ "${#ACTIVE_SCENARIOS[@]}" -gt 0 ]]; then
+            {
+              echo "# CICD scenario selection — auto-generated by sync-cicd-templates"
+              echo "# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo "# Edit this file or use install-scenario / remove-scenario workflow inputs."
+              echo "#"
+              for sname in "${ACTIVE_SCENARIOS[@]}"; do
+                stype=$(echo "$MANIFESTS" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .type')
+                sdesc=$(echo "$MANIFESTS" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .description')
+                echo "# ${stype}: ${sdesc}"
+                echo "$sname"
+              done
+            } > "$SCENARIOS_FILE"
+            echo "📝 Generated $SCENARIOS_FILE"
+          fi
+
+          # ── Write active scenarios list for downstream steps ──
+          printf '%s\n' "${ACTIVE_SCENARIOS[@]}" > "$RUNNER_TEMP/cicd_active_scenarios.txt"
+          echo "✅ Active scenarios: ${ACTIVE_SCENARIOS[*]:-none}"
+
+      - name: Build workflow allowlist & dropdown options
+        shell: bash
+        run: |
+          set -e
+
+          MANIFESTS=$(cat "$RUNNER_TEMP/cicd_manifests.json")
+          ACTIVE_SCENARIOS=()
+          if [[ -s "$RUNNER_TEMP/cicd_active_scenarios.txt" ]]; then
+            while IFS= read -r sname; do
+              [[ -n "$sname" ]] && ACTIVE_SCENARIOS+=("$sname")
+            done < "$RUNNER_TEMP/cicd_active_scenarios.txt"
+          fi
+
+          # ── Build allowed workflows set ──
+          declare -A ALLOWED_WORKFLOWS
+          ALLOWED_WORKFLOWS["sync-cicd-templates.yml"]=1
+          for sname in "${ACTIVE_SCENARIOS[@]}"; do
+            while IFS= read -r wf; do
+              ALLOWED_WORKFLOWS["$wf"]=1
+            done < <(echo "$MANIFESTS" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .workflows[]')
+          done
+          echo "📂 Allowed workflows: ${!ALLOWED_WORKFLOWS[*]}"
+
+          # ── Remove stale managed workflow files ──
+          MANAGED_FILE=".github/cicd-managed-workflows.txt"
+          REMOVED_WORKFLOWS=()
+          if [[ -f "$MANAGED_FILE" ]]; then
+            echo ""
+            echo "🔍 Checking for stale managed workflows ..."
+            while IFS= read -r wf; do
+              [[ -z "$wf" || "$wf" == \#* ]] && continue
+              if [[ -z "${ALLOWED_WORKFLOWS[$wf]+x}" ]]; then
+                if [[ -f ".github/workflows/$wf" ]]; then
+                  rm -f ".github/workflows/$wf"
+                  REMOVED_WORKFLOWS+=("$wf")
+                  echo "   🗑️  Removed: $wf"
+                fi
+              fi
+            done < "$MANAGED_FILE"
+          fi
+
+          # ── Build install/remove dropdown option files ──
+          INSTALL_OPTIONS="$RUNNER_TEMP/cicd_install_options.txt"
+          REMOVE_OPTIONS="$RUNNER_TEMP/cicd_remove_options.txt"
+          > "$INSTALL_OPTIONS"
+          > "$REMOVE_OPTIONS"
+
+          declare -A INSTALLED_MAP
+          for sname in "${ACTIVE_SCENARIOS[@]}"; do INSTALLED_MAP["$sname"]=1; done
+
+          while IFS=$'\t' read -r slabel sname; do
+            line="          - \"${slabel}\""
+            if [[ -z "${INSTALLED_MAP[$sname]+x}" ]]; then
+              echo "$line" >> "$INSTALL_OPTIONS"
+            else
+              echo "$line" >> "$REMOVE_OPTIONS"
+            fi
+          done < <(echo "$MANIFESTS" | jq -r '.[] | [.label, .name] | @tsv')
+          sort -o "$INSTALL_OPTIONS" "$INSTALL_OPTIONS"
+          sort -o "$REMOVE_OPTIONS"  "$REMOVE_OPTIONS"
+
+          # ── Persist state for downstream steps ──
+          printf '%s\n' "${!ALLOWED_WORKFLOWS[@]}" | sort > "$RUNNER_TEMP/cicd_allowed_workflows.txt"
+          printf '%s\n' "${REMOVED_WORKFLOWS[@]}"        > "$RUNNER_TEMP/cicd_removed_workflows.txt"
+          echo "✅ Wrote allowlist ($(wc -l < "$RUNNER_TEMP/cicd_allowed_workflows.txt") entries) and dropdown option files"
+
+      - name: Discover target environments
+        id: discover-envs
+        uses: ./.cicd-actions/.github/actions/discover-environments
+        with:
+          github-token: ${{ steps.app-token-suite.outputs.token }}
+          github-api-url: ${{ github.api_url }}
+          github-repository: ${{ github.repository }}
+
+      - name: Download & post-process templates
+        shell: bash
+        env:
+          GH_CICD_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          SOURCE_REF: ${{ inputs.source-ref || vars.GIT_CICD_REF }}
+          GIT_CICD_ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          GIT_CICD_REF: ${{ vars.GIT_CICD_REF }}
+          DISCOVERED_ENVS: ${{ steps.discover-envs.outputs.environments }}
+        run: |
+          set -e
+
+          cicd_api_get() {
+            curl -s \
+              -H "Authorization: token $GH_CICD_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GIT_CICD_ORGREPO}/$1"
+          }
+
+          # ── Build environment dropdown option file ──
+          ENV_OPTIONS="$RUNNER_TEMP/cicd_env_options.txt"
+          > "$ENV_OPTIONS"
+          if [[ -n "$DISCOVERED_ENVS" ]] && [[ "$DISCOVERED_ENVS" != "[]" ]]; then
+            while IFS= read -r env_name; do
+              echo "          - \"${env_name}\"" >> "$ENV_OPTIONS"
+            done < <(echo "$DISCOVERED_ENVS" | jq -r '.[]')
+            echo "🌍 Environment options: $(tr '\n' ' ' < "$ENV_OPTIONS")"
+          else
+            echo "⚠️  No environments discovered — target-env placeholder will have no options injected"
+          fi
+
+          # ── Load allowed workflows ──
+          declare -A ALLOWED_WORKFLOWS
+          while IFS= read -r wf; do
+            [[ -n "$wf" ]] && ALLOWED_WORKFLOWS["$wf"]=1
+          done < "$RUNNER_TEMP/cicd_allowed_workflows.txt"
+
+          # ── Load exclusions ──
+          EXCLUSIONS=()
+          EXCLUSIONS_FILE=".github/cicd-sync-exclusions.txt"
+          if [[ -f "$EXCLUSIONS_FILE" ]]; then
+            echo "📋 Reading exclusions from $EXCLUSIONS_FILE"
+            while IFS= read -r line; do
+              [[ -z "$line" || "$line" == \#* ]] && continue
+              fname=$(echo "$line" | awk '{print $1}')
+              EXCLUSIONS+=("$fname")
+              echo "   ⛔ Excluded: $fname"
+            done < "$EXCLUSIONS_FILE"
+          fi
+
+          # ── Fetch and process templates ──
+          echo ""
+          echo "📥 Fetching template list from $GIT_CICD_ORGREPO@$SOURCE_REF ..."
+          TEMPLATES=$(cicd_api_get "contents/templates/workflows?ref=${SOURCE_REF}" | jq -r '.[].name')
+
+          if [[ -z "$TEMPLATES" ]]; then
+            echo "❌ No templates found. Check GIT_CICD_ORGREPO and SOURCE_REF."
+            exit 1
+          fi
+
+          mkdir -p .github/workflows
+
+          UPDATED=()
+          ADDED=()
+          SKIPPED=()
+          SCENARIO_SKIPPED=()
+
+          for tmpl in $TEMPLATES; do
+            # ── Scenario filter ──
+            if [[ -z "${ALLOWED_WORKFLOWS[$tmpl]+x}" ]]; then
+              SCENARIO_SKIPPED+=("$tmpl"); continue
+            fi
+
+            # ── Exclusions filter ──
+            excluded=false
+            for ex in "${EXCLUSIONS[@]}"; do
+              [[ "$tmpl" == "$ex" ]] && excluded=true && break
+            done
+            if $excluded; then SKIPPED+=("$tmpl"); continue; fi
+
+            target=".github/workflows/$tmpl"
+
+            # ── Download with null guard ──
+            content=$(cicd_api_get "contents/templates/workflows/${tmpl}?ref=${SOURCE_REF}" \
+                      | jq -r '.content // empty')
+            if [[ -z "$content" ]]; then
+              echo "⚠️  Could not fetch $tmpl — skipping"; continue
+            fi
+            echo "$content" | base64 -d > "$target"
+
+            # ── Substitute repo reference and version tag ──
+            sed -E -i \
+              "s|SAP/cicd-actions-for-sap-integration-suite(/[^ ]+)@[^ ]+|${GIT_CICD_ORGREPO}\1@${GIT_CICD_REF}|g" \
+              "$target"
+            _wfref="workflow-ref"
+            sed -E -i \
+              "s|${_wfref}: [^ ]+|${_wfref}: ${GIT_CICD_REF}|g" \
+              "$target"
+
+            # ── Placeholder injection (runs for any template containing a #!cicd: marker) ──
+            if grep -q '#!cicd:' "$target"; then
+              cp "$target" "${target}.bak"
+
+              IFILE="$RUNNER_TEMP/cicd_install_options.txt"
+              RFILE="$RUNNER_TEMP/cicd_remove_options.txt"
+              EFILE="$ENV_OPTIONS"
+
+              if awk -v ifile="$IFILE" -v rfile="$RFILE" -v efile="$EFILE" '
+                /options:[[:space:]]+#!cicd:install-options!/ {
+                  sub(/ *#!cicd:install-options!/, ""); print
+                  printf "          - \"\"\n"
+                  close(ifile); while ((getline l < ifile)>0) print l
+                  skip=1; next
+                }
+                /options:[[:space:]]+#!cicd:remove-options!/ {
+                  sub(/ *#!cicd:remove-options!/, ""); print
+                  printf "          - \"\"\n"
+                  close(rfile); while ((getline l < rfile)>0) print l
+                  skip=1; next
+                }
+                /options:[[:space:]]+#!cicd:target-env-options!/ {
+                  sub(/ *#!cicd:target-env-options!/, ""); print
+                  printf "          - \"\"\n"
+                  close(efile); while ((getline l < efile)>0) print l
+                  skip=1; next
+                }
+                skip && /^          - / { next }
+                skip { skip=0 }
+                { print }
+              ' "$target" > "$target.tmp"; then
+                mv "$target.tmp" "$target"
+              else
+                echo "⚠️  Placeholder injection failed for $tmpl — restoring raw download"
+                rm -f "$target.tmp"
+                cp "${target}.bak" "$target"
+              fi
+
+              # ── Sanity check: verify processed file is a valid workflow ──
+              if ! grep -q "^jobs:" "$target" && ! grep -q "^on:" "$target"; then
+                echo "⚠️  Post-processing validation failed for $tmpl — restoring raw download"
+                cp "${target}.bak" "$target"
+              fi
+
+              rm -f "${target}.bak"
+            fi
+
+            # ── Track changes ──
+            if ! git ls-files --error-unmatch "$target" 2>/dev/null; then
+              ADDED+=("$tmpl")
+            elif ! git diff --quiet -- "$target" 2>/dev/null; then
+              UPDATED+=("$tmpl")
+            fi
+          done
+
+          # ── Persist change lists for commit step ──
+          printf '%s\n' "${UPDATED[@]}"          > "$RUNNER_TEMP/cicd_updated.txt"
+          printf '%s\n' "${ADDED[@]}"            > "$RUNNER_TEMP/cicd_added.txt"
+          printf '%s\n' "${SKIPPED[@]}"          > "$RUNNER_TEMP/cicd_skipped.txt"
+          printf '%s\n' "${SCENARIO_SKIPPED[@]}" > "$RUNNER_TEMP/cicd_scenario_skipped.txt"
+
+      - name: Commit and push
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source-ref || vars.GIT_CICD_REF }}
+          GIT_CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          set -e
+
+          # ── Read state from previous steps ──
+          ACTIVE_SCENARIOS_STR=$(paste -sd ' ' "$RUNNER_TEMP/cicd_active_scenarios.txt" 2>/dev/null || true)
+          REMOVED_WF_STR=$(paste -sd ' '      "$RUNNER_TEMP/cicd_removed_workflows.txt" 2>/dev/null || true)
+          UPDATED_STR=$(paste -sd ' '         "$RUNNER_TEMP/cicd_updated.txt"          2>/dev/null || true)
+          ADDED_STR=$(paste -sd ' '           "$RUNNER_TEMP/cicd_added.txt"            2>/dev/null || true)
+          SKIPPED_STR=$(paste -sd ' '         "$RUNNER_TEMP/cicd_skipped.txt"          2>/dev/null || true)
+          SCENARIO_SKIP_STR=$(paste -sd ' '   "$RUNNER_TEMP/cicd_scenario_skipped.txt" 2>/dev/null || true)
+
+          # ── Load exclusions for managed-workflows filtering ──
+          EXCLUSIONS=()
+          EXCLUSIONS_FILE=".github/cicd-sync-exclusions.txt"
+          if [[ -f "$EXCLUSIONS_FILE" ]]; then
+            while IFS= read -r line; do
+              [[ -z "$line" || "$line" == \#* ]] && continue
+              EXCLUSIONS+=("$(echo "$line" | awk '{print $1}')")
+            done < "$EXCLUSIONS_FILE"
+          fi
+
+          # ── Update managed workflows tracking file ──
+          MANAGED_FILE=".github/cicd-managed-workflows.txt"
+          {
+            echo "# SAP CICD managed workflow files — do not edit manually"
+            echo "# Updated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            while IFS= read -r wf; do
+              [[ -z "$wf" ]] && continue
+              excluded=false
+              for ex in "${EXCLUSIONS[@]}"; do [[ "$wf" == "$ex" ]] && excluded=true && break; done
+              $excluded || echo "$wf"
+            done < "$RUNNER_TEMP/cicd_allowed_workflows.txt"
+          } > "$MANAGED_FILE"
+
+          echo ""
+          echo "========================================"
+          echo "📊 Sync Summary"
+          echo "========================================"
+          echo "📦 Active scenarios : ${ACTIVE_SCENARIOS_STR:-none — use install-scenario to get started}"
+          echo "✅ Updated         : ${UPDATED_STR:-none}"
+          echo "🆕 Added           : ${ADDED_STR:-none}"
+          echo "🗑️  Removed         : ${REMOVED_WF_STR:-none}"
+          echo "⛔ Excluded        : ${SKIPPED_STR:-none}"
+          echo "🔕 Not in scenario : ${SCENARIO_SKIP_STR:-none}"
+
+          # ── Commit and push directly to default branch ──
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A .github/workflows/
+          git add .github/cicd-scenarios.txt 2>/dev/null || true
+          git add .github/cicd-managed-workflows.txt 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo ""
+            echo "✅ Already up to date — nothing to push."
+            exit 0
+          fi
+
+          git commit -m "chore: sync CICD workflow templates from ${SOURCE_REF} [skip ci]"
+          git push origin HEAD
+
+          PUSHED_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo ""
+          echo "✅ Changes pushed directly to $PUSHED_BRANCH."

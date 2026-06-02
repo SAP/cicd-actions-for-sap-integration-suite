@@ -1,0 +1,135 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-10 - Initial release
+#
+name: Get IFlow Runtime Status
+description: |
+  For a given list of packages (JSON array), fetches all IFlows per package
+  from BTP Integration Suite and queries their runtime status including
+  deployed version. Outputs a JSON file with the complete data.
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  packages:
+    description: "JSON array of packages [{Id, Name}] from get-packages-by-regex"
+    required: true
+  environment:
+    description: "Environment name (e.g. DEV, TST, PRD) - used for labeling output"
+    required: true
+  output-file:
+    description: "Path to write the output JSON file"
+    required: true
+  btp-is-url:
+    description: "Integration Suite URL (BTP_IS_URL) for this environment - used for dashboard links"
+    required: false
+    default: ""
+
+outputs:
+  file:
+    description: "Path to the output JSON file containing runtime data"
+    value: ${{ steps.fetch-runtime.outputs.file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch IFlow runtime status for all packages
+      id: fetch-runtime
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGES: ${{ inputs.packages }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        BTP_IS_URL: ${{ inputs.btp-is-url }}
+      run: |
+        echo "🔍 Fetching IFlow runtime data for $ENVIRONMENT..."
+
+        # Initialize result structure
+        RESULT=$(jq -n --arg env "$ENVIRONMENT" --arg url "$BTP_IS_URL" '{environment: $env, btpIsUrl: $url, packages: []}')
+
+        PACKAGE_COUNT=$(echo "$PACKAGES" | jq 'length')
+        echo "  Processing $PACKAGE_COUNT packages..."
+
+        for pkg_idx in $(seq 0 $((PACKAGE_COUNT - 1))); do
+          PKG_ID=$(echo "$PACKAGES" | jq -r ".[$pkg_idx].Id")
+          PKG_NAME=$(echo "$PACKAGES" | jq -r ".[$pkg_idx].Name")
+          echo ""
+          echo "  📦 Package: $PKG_NAME ($PKG_ID)"
+
+          # Fetch IFlows for this package
+          iflow_response=$(curl -s -w "\n%{http_code}" -X GET \
+            "$BTP_API_URL/api/v1/IntegrationPackages('$PKG_ID')/IntegrationDesigntimeArtifacts?\$format=json" \
+            -H "Authorization: $BEARER_TOKEN")
+
+          IFLOW_STATUS=$(echo "$iflow_response" | tail -n1)
+          IFLOW_BODY=$(echo "$iflow_response" | sed '$d')
+
+          IFLOWS_JSON="[]"
+          if [ "$IFLOW_STATUS" = "200" ]; then
+            IFLOW_IDS=$(echo "$IFLOW_BODY" | jq -c '[.d.results[] | {Id: .Id, Name: .Name, Version: .Version}]')
+            IFLOW_COUNT=$(echo "$IFLOW_IDS" | jq 'length')
+            echo "    Found $IFLOW_COUNT IFlows"
+
+            # Get runtime status for each IFlow
+            for iflow_idx in $(seq 0 $((IFLOW_COUNT - 1))); do
+              IFLOW_ID=$(echo "$IFLOW_IDS" | jq -r ".[$iflow_idx].Id")
+              IFLOW_NAME=$(echo "$IFLOW_IDS" | jq -r ".[$iflow_idx].Name")
+              IFLOW_DT_VERSION=$(echo "$IFLOW_IDS" | jq -r ".[$iflow_idx].Version")
+
+              # Query runtime status
+              rt_response=$(curl -s -w "\n%{http_code}" -X GET \
+                "$BTP_API_URL/api/v1/IntegrationRuntimeArtifacts('$IFLOW_ID')?\$select=Status,Version&\$format=json" \
+                -H "Authorization: $BEARER_TOKEN")
+
+              RT_STATUS_CODE=$(echo "$rt_response" | tail -n1)
+              RT_BODY=$(echo "$rt_response" | sed '$d')
+
+              RT_STATUS="NOT_DEPLOYED"
+              RT_VERSION=""
+
+              if [ "$RT_STATUS_CODE" = "200" ]; then
+                RT_STATUS=$(echo "$RT_BODY" | jq -r '.d.Status // "UNKNOWN"')
+                RT_VERSION=$(echo "$RT_BODY" | jq -r '.d.Version // ""')
+              fi
+
+              echo "    🔹 $IFLOW_ID: Runtime=$RT_STATUS Version=$RT_VERSION"
+
+              IFLOW_ENTRY=$(jq -n \
+                --arg id "$IFLOW_ID" \
+                --arg name "$IFLOW_NAME" \
+                --arg dtVersion "$IFLOW_DT_VERSION" \
+                --arg rtStatus "$RT_STATUS" \
+                --arg rtVersion "$RT_VERSION" \
+                '{id: $id, name: $name, designtimeVersion: $dtVersion, runtimeStatus: $rtStatus, runtimeVersion: $rtVersion}')
+
+              IFLOWS_JSON=$(echo "$IFLOWS_JSON" | jq --argjson entry "$IFLOW_ENTRY" '. + [$entry]')
+            done
+          elif [ "$IFLOW_STATUS" = "404" ]; then
+            echo "    ⚠️ Package not found on this environment"
+          else
+            echo "    ⚠️ Could not fetch IFlows (HTTP $IFLOW_STATUS)"
+          fi
+
+          # Add package with its IFlows to result
+          PKG_ENTRY=$(jq -n \
+            --arg id "$PKG_ID" \
+            --arg name "$PKG_NAME" \
+            --argjson iflows "$IFLOWS_JSON" \
+            '{id: $id, name: $name, iflows: $iflows}')
+
+          RESULT=$(echo "$RESULT" | jq --argjson pkg "$PKG_ENTRY" '.packages += [$pkg]')
+        done
+
+        # Save to file
+        echo "$RESULT" > "$OUTPUT_FILE"
+        echo ""
+        echo "✅ Runtime data saved for $ENVIRONMENT to $OUTPUT_FILE"
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"

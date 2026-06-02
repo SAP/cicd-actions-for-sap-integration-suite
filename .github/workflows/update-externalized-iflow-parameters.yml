@@ -4,6 +4,8 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
+# 1.0.2 - 2026-05-21 - Add explicit permissions block for GITHUB_TOKEN hardening; split GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
+# 1.1.0 - 2026-05-21 - Add enable-set-log-level input; rename iflow-deploy to evaluate-deployment; resolve deploy task via resolve-iflow-deploy-task action; fix env-aware deploy flag (O.Weng)
 #
 name: Update Externalized Parameters For IFlow
 
@@ -22,8 +24,8 @@ on:
         description: "IFlow ID"
         required: true
         type: string
-      iflow-deploy:
-        description: "Deploy iFlow?"
+      evaluate-deployment:
+        description: "Evaluate Deployment_INTEGRATION_FLOW.json and trigger deployment based on its configuration"
         required: true
         type: string
       source-ref:
@@ -49,21 +51,34 @@ on:
       git-cicd-orgrepo:
         description: "Remote GIT Org/Repo for CICD"
         required: true
-        type: string     
+        type: string
+      enable-set-log-level:
+        description: "Set MPL log level after deployment (uses undocumented API — disable via BTP_SET_LOG_LEVEL=false if endpoint breaks)"
+        required: false
+        type: string
+        default: "true"
     secrets:
        BTP_API_PASSWORD:
         required: true
        BTP_TEC_PASSWORD:
         required: true
        GIT_CICD_TOKEN:
-         description: "GIT Token of remote CICD Repo"
-         required: true
+         description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY)"
+         required: false
+       GIT_CICD_APP_PRIVATE_KEY:
+         description: "GitHub App private key PEM for CICD reader app (preferred — used together with GIT_CICD_APP_ID variable)"
+         required: false
+
+permissions:
+  contents: read
 
 jobs:
   update-externalized-parameters-for-iflow:
     name: Update IFLOW ${{ inputs.iflow-id }}
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
+    outputs:
+      package-id: ${{ steps.get-packageid-for-iflow.outputs.packageID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -71,13 +86,41 @@ jobs:
           ref: ${{ inputs.source-ref }}
           path: btp-insuite
 
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
           ref: ${{ inputs.workflow-ref }}
           path: cicd-btp-insuite
-          token: ${{ secrets.GIT_CICD_TOKEN }}
+          token: ${{ steps.cicd-token.outputs.token }}
 
       - name: Request OAuth Token
         id: get-token
@@ -110,18 +153,52 @@ jobs:
   deploy-iflow:
     needs: update-externalized-parameters-for-iflow
     name: Deploy IFLOW ${{ inputs.iflow-id }}
-    if: inputs.iflow-deploy == 'true'
+    if: inputs.evaluate-deployment == 'true'
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
 
     steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
+          path: btp-insuite
+
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
           ref: ${{ inputs.workflow-ref }}
           path: cicd-btp-insuite
-          token: ${{ secrets.GIT_CICD_TOKEN }}
+          token: ${{ steps.cicd-token.outputs.token }}
 
       - name: Request OAuth Token
         id: get-token
@@ -133,36 +210,19 @@ jobs:
           BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
           BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
 
-      - name: Generate Deployment JSON
-        id: generate-deployment-file
-        run: |
-          # Create deployment file
-          DEPLOYMENT_FILE="deployment-tasks.json"
+      - name: Resolve IFlow Deploy Task
+        id: deployment-file
+        uses: ./cicd-btp-insuite/.github/actions/resolve-iflow-deploy-task
+        with:
+          package-id: ${{ needs.update-externalized-parameters-for-iflow.outputs.package-id }}
+          iflow-id: ${{ inputs.iflow-id }}
+          target-env: ${{ inputs.target-env }}
 
-          # Generate JSON using jq
-          jq -n --arg id "${{ inputs.iflow-id }}" \
-            '{
-            "d": {
-              "deploytasks": [
-                {
-                    "id": $id,
-                         "type": "Integration"
-          	              }
-          	            ]
-          	          }
-          	        }' > "$DEPLOYMENT_FILE"
-
-                # Display the generated file for verification
-                echo "Generated deployment file:"
-              cat "$DEPLOYMENT_FILE"
-      
-          	      # Set output for use in subsequent steps
-          	      echo "deployment-file=$DEPLOYMENT_FILE" >> $GITHUB_OUTPUT
- 
       - name: Deploy Package Artifacts
         uses: ./cicd-btp-insuite/.github/actions/deploy-package-artifacts
         with:
           bearer-token: ${{ steps.get-token.outputs.token }}
           btp-api-url: ${{ inputs.btp-api-url }}
-          file: ${{ steps.generate-deployment-file.outputs.deployment-file }}
+          file: ${{ steps.deployment-file.outputs.file }}
           action: Deploy
+          enable-set-log-level: ${{ inputs.enable-set-log-level }}

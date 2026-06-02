@@ -1,0 +1,71 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+#
+
+name: 'delete-access-policy'
+description: 'Composite action to delete an access policy from BTP Integration Suite'
+inputs:
+  bearer-token:
+    description: 'BEARER Token to access Integration Suite Artifacts'
+    required: true
+    type: string
+  access-policy-name:
+    description: 'Name (RoleName) of the Access Policy to delete'
+    required: true
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+
+  ## Lookup Access Policy by name and delete it (incl. all Artifact References)
+  - name: Delete Access Policy
+    shell: bash
+    env:
+      BEARER_TOKEN: ${{ inputs.bearer-token }}
+      BTP_API_URL: ${{ inputs.btp-api-url }}
+      POLICY_NAME: ${{ inputs.access-policy-name }}
+    run: |
+      echo "Looking up Access Policy '$POLICY_NAME' on BTP..."
+
+      FILTER_URL="$BTP_API_URL/api/v1/AccessPolicies?\$filter=RoleName%20eq%20'$POLICY_NAME'&\$format=json"
+      curl_response=$(curl -s -w "\n%{http_code}" -X GET "$FILTER_URL" \
+        -H "Authorization: $BEARER_TOKEN" \
+        -H "Accept: application/json")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "Error: HTTP status $HTTP_STATUS while looking up Access Policy."
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      POLICY_ID=$(echo "$BODY" | jq -r '.d.results[0].Id // empty')
+
+      if [ -z "$POLICY_ID" ]; then
+        echo "Access Policy '$POLICY_NAME' not found on BTP — nothing to delete."
+        exit 0
+      fi
+
+      echo "Found Access Policy '$POLICY_NAME' with ID $POLICY_ID — deleting..."
+
+      curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/AccessPolicies(${POLICY_ID}L)" \
+        -H "Authorization: $BEARER_TOKEN")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "204" ] && [ "$HTTP_STATUS" != "404" ]; then
+        echo "Error: HTTP status $HTTP_STATUS while deleting Access Policy '$POLICY_NAME'."
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      echo "✅ Access Policy '$POLICY_NAME' deleted (HTTP $HTTP_STATUS)."

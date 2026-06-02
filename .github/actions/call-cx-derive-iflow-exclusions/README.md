@@ -13,7 +13,7 @@ This action is the **exit-specific caller** for the IFlow exclusions customer ex
 3. Conditionally invokes the `cx-derive-iflow-exclusions` action from the resolved repository (intsuite or extension)
 4. Returns the `exclude-iflow-ids` output for use by downstream deployment steps
 
-This action is designed to be called from the `btp-release-import` workflow, between the change analysis and deployment execution steps.
+This action is designed to be called from within the deployment job (e.g., the `btp-update-runtime` job in `delete-upload.yml`), ensuring fresh exclusion data on every run — including job restarts.
 
 ---
 
@@ -60,10 +60,11 @@ Returns an empty string if:
 
 ```yaml
 jobs:
-  customer-exit-iflow-exclusions:
+  btp-update-runtime:
     runs-on: ubuntu-latest
-    outputs:
-      exclude-iflow-ids: ${{ steps.call-exit.outputs.exclude-iflow-ids }}
+    strategy:
+      matrix:
+        id: ${{ fromJson(needs.preprocess-ids.outputs.integrationpackages_to_upload) }}
     steps:
       - name: Checkout cicd-actions repo
         uses: actions/checkout@v4
@@ -73,26 +74,27 @@ jobs:
           path: cicd-btp-insuite
           token: ${{ secrets.GIT_CICD_TOKEN }}
 
-      - name: Call Customer Exit
+      - name: Call Customer Exit - Derive IFlow Exclusions
+        if: ${{ inputs.cx-iflow-exclusions == 'true' && matrix.id != 'EmptyMatrix' }}
         id: call-exit
         uses: ./cicd-btp-insuite/.github/actions/call-cx-derive-iflow-exclusions
         with:
-          cx-active: ${{ vars.CX_IFLOW_EXCLUSIONS }}
+          cx-active: ${{ inputs.cx-iflow-exclusions }}
           intsuite-repo-path: intsuite-repo
           extension-repo-path: cx-extension-repo
-          cx-repository: ${{ vars.CX_REPOSITORY }}
-          cx-repository-ref: ${{ vars.CX_REPOSITORY_REF || 'main' }}
+          cx-repository: ${{ inputs.cx-repository }}
+          cx-repository-ref: ${{ inputs.cx-repository-ref }}
           git-cicd-token: ${{ secrets.GIT_CICD_TOKEN }}
           btp-tec-password: ${{ secrets.BTP_TEC_PASSWORD }}
           btp-api-password: ${{ secrets.BTP_API_PASSWORD }}
           target-env: PRD
           target-ref: main
 
-  deployment:
-    needs: customer-exit-iflow-exclusions
-    steps:
-      - name: Deploy with exclusions
-        run: echo "Excluding: ${{ needs.customer-exit-iflow-exclusions.outputs.exclude-iflow-ids }}"
+      - name: Deploy Package to Runtime
+        uses: ./cicd-btp-insuite/.github/actions/update-runtime
+        with:
+          # ...
+          exclude-iflow-ids: ${{ steps.call-exit.outputs.exclude-iflow-ids }}
 ```
 
 ---

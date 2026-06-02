@@ -1,0 +1,66 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-02-27 - Initial release (extracted from download-pid)
+#
+name: 'convert-pid-to-git'
+description: 'Convert downloaded Partner Directory JSON files to Git repository structure'
+
+inputs:
+  partner-id:
+    description: 'Partner ID'
+    required: true
+  input-dir:
+    description: 'Directory containing downloaded JSON files'
+    required: true
+  output-dir:
+    description: 'Directory for Git repository structure (default: btp-insuite/PartnerDirectory)'
+    required: false
+    default: 'btp-insuite/PartnerDirectory'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clean JSON - StringParameters
+      id: clean-json-sp
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ inputs.input-dir }}/StringParameters.json
+        keep_nodes: d.results.Pid,d.results.Id,d.results.Value
+
+    - name: Clean JSON - AlternativePartners
+      id: clean-json-ap
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ inputs.input-dir }}/AlternativePartners.json
+        keep_nodes: d.results.Pid,d.results.Agency,d.results.Id,d.results.Scheme
+
+    - name: Clean JSON - AuthorizedUsers
+      id: clean-json-au
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ inputs.input-dir }}/AuthorizedUsers.json
+        keep_nodes: d.results.Pid,d.results.User
+
+    - name: Clean JSON - BinaryParameters
+      id: clean-json-bp
+      uses: ./cicd-btp-insuite/.github/actions/clean-json-nodes
+      with:
+        filename: ${{ inputs.input-dir }}/BinaryParameters.json
+        keep_nodes: d.results.Pid,d.results.ContentType,d.results.Id,d.results.Value
+
+    - name: Create Partner Directory Structure
+      uses: ./cicd-btp-insuite/.github/actions/create-partner-directory
+      with:
+        partner-id: ${{ inputs.partner-id }}
+        StringParameters: ${{ inputs.input-dir }}/StringParameters.json
+        AlternativePartners: ${{ inputs.input-dir }}/AlternativePartners.json
+        AuthorizedUsers: ${{ inputs.input-dir }}/AuthorizedUsers.json
+        BinaryParameters: ${{ inputs.input-dir }}/BinaryParameters.json
+
+    - name: Decode BinaryParameters and update JSON
+      uses: ./cicd-btp-insuite/.github/actions/decode-binary-parameters
+      with:
+        partner-id: ${{ inputs.partner-id }}
+        output-dir: ${{ inputs.output-dir }}

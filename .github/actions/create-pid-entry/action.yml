@@ -3,10 +3,12 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.1.0 - 2026-02-27 - Add eic-location parameter for Edge Integration Cell support (O. Weng)
+# 1.2.0 - 2026-05-05 - Add eic-url-template parameter; EIC URL path not yet published — subject to change
 #
 
 name: Create Partner ID Entry
-description: Create Partner Directory Entry in BTP
+description: Create Partner Directory Entry in BTP (Cloud Integration or Edge Integration Cell)
 
 inputs:
   bearer-token:
@@ -21,24 +23,38 @@ inputs:
   btp-api-url:
     description: "URL on BTP to access APIs"
     required: true
+  eic-location:
+    description: "Edge Integration Cell location identifier (optional). If provided, uses EIC API path."
+    required: false
+    default: ""
+  eic-url-template:
+    description: "URL path template for EIC API access. Contains {runtime} as placeholder for the runtime identifier. NOTE: Not published. Pre-work to support EIC — do not use productively. Subject to change."
+    required: false
 
 runs:
   using: "composite"
   steps:
     
     - id: create-pid-entries
-      name: Create Partner Directory Entries for ${{ inputs.type }}
+      name: Create Partner Directory Entries
       shell: bash
       env:
         BEARER_TOKEN: ${{ inputs.bearer-token }}
         BTP_API_URL: ${{ inputs.btp-api-url }}
         TYPE: ${{ inputs.type }}
         PARAMETER_JSON: ${{ inputs.parameter-json }}
+        EIC_LOCATION: ${{ inputs.eic-location }}
+        EIC_URL_TEMPLATE: ${{ inputs.eic-url-template }}
       run: |
         set -euo pipefail
         
         echo "========================================="
         echo "🚀 Creating Partner Directory: $TYPE"
+        if [[ -n "$EIC_LOCATION" ]]; then
+          echo "📍 Target: Edge Integration Cell ($EIC_LOCATION)"
+        else
+          echo "📍 Target: Cloud Integration"
+        fi
         echo "========================================="
         
         # Function to validate JSON structure based on type
@@ -105,8 +121,18 @@ runs:
         echo "📊 Processing $ENTRY_COUNT entries for $TYPE"
         echo "-----------------------------------------"
         
-        # Setup API endpoint
-        API_ENDPOINT="$BTP_API_URL/api/v1/$TYPE"
+        # Setup API endpoint based on whether EIC location is provided
+        if [[ -n "$EIC_LOCATION" ]]; then
+          if [[ -z "$EIC_URL_TEMPLATE" ]]; then
+            echo "❌ eic-url-template is required when eic-location is set. Configure BTP_EIC_URL_TEMPLATE (URL path not yet published, subject to change)."
+            exit 1
+          fi
+          EIC_PATH="${EIC_URL_TEMPLATE//\{runtime\}/$EIC_LOCATION}"
+          API_ENDPOINT="$BTP_API_URL${EIC_PATH}/$TYPE"
+        else
+          API_ENDPOINT="$BTP_API_URL/api/v1/$TYPE"
+        fi
+        echo "🔗 API Endpoint: $API_ENDPOINT"
         
         # Initialize counters
         SUCCESS_COUNT=0

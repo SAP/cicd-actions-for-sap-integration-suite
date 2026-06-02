@@ -5,6 +5,9 @@
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-01-29 - Introduce environment variable RUNS_ON (O.Weng)
 # 1.0.2 - 2026-02-26 - Remove output of secrets (O.Weng)
+# 1.1.0 - 2026-05-12 - Add GitHub App authentication support (O.Weng)
+# 1.2.0 - 2026-05-21 - Split GitHub App into CICD reader and consumer bot; merge initialize job; add log level; rename iflow-deploy to evaluate-deployment (O.Weng)
+# 1.6.0 - 2026-05-28 - Replace hardcoded target-env options with #!cicd:target-env-options! placeholder (O.Weng)
 #
 
 name: (Dev) Update Externalized Parameters for IFlow on DEV or TST
@@ -16,15 +19,14 @@ on:
         description: "Environment"
         required: true
         type: choice
-        options:
-          - DEV
-          - TST
+        options:  #!cicd:target-env-options!
+          - ""
       iflow-id:
         description: "IFlow ID"
         required: true
         type: string
-      iflow-deploy:
-        description: "Evaluate Deployment JSON?"
+      evaluate-deployment:
+        description: "Evaluate Deployment_INTEGRATION_FLOW.json"
         required: true
         type: choice
         options:
@@ -35,20 +37,8 @@ permissions:
   contents: write
 
 jobs:
-  authorize:
-    name: Authorization Check
-    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
-    environment: ${{ inputs.target-env }}
-    steps:     
-      - name: Check team authorization
-        uses: SAP/cicd-actions-for-sap-integration-suite/.github/actions/check-team-authorization@v1
-        with:
-          team-slug: ${{ vars.BTP_DEV_TEAM_SLUG }}
-          github-token: ${{ secrets.GIT_ORG_TOKEN }}
-          
-  read-env-vars:
-    needs: authorize
-    name: Read Environment Variables for ${{ inputs.target-env }}
+  initialize:
+    name: Authorize & Read Environment Variables for ${{ inputs.target-env }}
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
     environment: ${{ inputs.target-env }}
     outputs:
@@ -58,6 +48,31 @@ jobs:
       btp-api-url: ${{ steps.export.outputs.btp-api-url }}
       git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: ${{ vars.GIT_GITHUB_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Resolve org token
+        id: org-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_ORG_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No org token: set GIT_GITHUB_APP_ID + GIT_GITHUB_APP_PRIVATE_KEY, or set GIT_ORG_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Check team authorization
+        uses: SAP/cicd-actions-for-sap-integration-suite/.github/actions/check-team-authorization@v1
+        with:
+          team-slug: ${{ vars.BTP_DEV_TEAM_SLUG }}
+          github-token: ${{ steps.org-token.outputs.token }}
+
       - name: Export vars
         id: export
         run: |
@@ -68,20 +83,22 @@ jobs:
           echo "git-cicd-orgrepo=${{ vars.GIT_CICD_ORGREPO }}" >> $GITHUB_OUTPUT
 
   update-externalized-iflow-parameters:
-    needs: read-env-vars
+    needs: initialize
     uses: SAP/cicd-actions-for-sap-integration-suite/.github/workflows/update-externalized-iflow-parameters.yml@v1
     with:
        workflow-ref: v1
        target-env: ${{ inputs.target-env }}
        iflow-id: ${{ inputs.iflow-id }}
        source-ref: development
-       iflow-deploy: ${{ inputs.iflow-deploy }}
-       btp-api-user: ${{ needs.read-env-vars.outputs.btp-api-user }}
-       btp-tec-user: ${{ needs.read-env-vars.outputs.btp-tec-user }}
-       btp-token-url: ${{ needs.read-env-vars.outputs.btp-token-url }}
-       btp-api-url: ${{ needs.read-env-vars.outputs.btp-api-url }}
-       git-cicd-orgrepo: ${{ needs.read-env-vars.outputs.git-cicd-orgrepo }}       
+       evaluate-deployment: ${{ inputs.evaluate-deployment }}
+       btp-api-user: ${{ needs.initialize.outputs.btp-api-user }}
+       btp-tec-user: ${{ needs.initialize.outputs.btp-tec-user }}
+       btp-token-url: ${{ needs.initialize.outputs.btp-token-url }}
+       btp-api-url: ${{ needs.initialize.outputs.btp-api-url }}
+       git-cicd-orgrepo: ${{ needs.initialize.outputs.git-cicd-orgrepo }}
+       enable-set-log-level: ${{ vars.BTP_SET_LOG_LEVEL != 'false' }}
     secrets:
        BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
        BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
        GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+       GIT_CICD_APP_PRIVATE_KEY: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}

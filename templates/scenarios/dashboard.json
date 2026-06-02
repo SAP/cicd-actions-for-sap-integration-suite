@@ -1,0 +1,9 @@
+{
+  "name": "dashboard",
+  "label": "BTP Dashboard Generator",
+  "type": "additive",
+  "description": "BTP Dashboard Generator — HTML status pages via GitHub Pages",
+  "workflows": [
+    "btp-dashboard-generator.yml"
+  ]
+}

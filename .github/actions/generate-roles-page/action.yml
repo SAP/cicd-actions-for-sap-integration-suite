@@ -1,0 +1,425 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-05-06 - Initial release with popup menus, role filter, compact grouped table layout; hide iflows with no role
+# 1.2.1 - 2026-05-20 - Remove project-specific DBF hint from role filter placeholder (O.Weng)
+#
+name: Generate Roles Page
+description: |
+  Generates an interactive HTML page (docs/roles.html) showing all IFlows
+  and their configured userRole, grouped by package. Input is the JSON file
+  produced by scan-iflow-roles. The page uses the same visual style as the
+  Integration Suite Dashboard and includes a shared navigation bar.
+  Only IFlows with a userRole configured (defined or unresolved param) are shown.
+
+inputs:
+  roles-data-file:
+    description: "Path to roles-data.json produced by scan-iflow-roles"
+    required: true
+  output-file:
+    description: "Path to write the generated HTML file"
+    required: false
+    default: "docs/roles.html"
+  github-repository:
+    description: "GitHub repository name (owner/repo) for display in header"
+    required: false
+    default: ""
+
+outputs:
+  file:
+    description: "Path to the generated HTML file"
+    value: ${{ steps.generate.outputs.file }}
+  changed:
+    description: "Whether the file content changed (true/false)"
+    value: ${{ steps.generate.outputs.changed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate HTML roles page
+      id: generate
+      shell: bash
+      env:
+        ROLES_DATA_FILE: ${{ inputs.roles-data-file }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        GH_REPO: ${{ inputs.github-repository }}
+      run: |
+        echo "🔑 Generating IFlow Roles page..."
+
+        if [ ! -f "$ROLES_DATA_FILE" ]; then
+          echo "❌ Roles data file not found: $ROLES_DATA_FILE"
+          exit 1
+        fi
+
+        DATA=$(<"$ROLES_DATA_FILE")
+        GENERATED=$(echo "$DATA" | jq -r '.generated')
+        DEV_ENV=$(echo "$DATA" | jq -r '.devEnvironment')
+        DEV_URL=$(echo "$DATA" | jq -r '.devUrl // ""')
+        TOTAL_IFLOWS=$(echo "$DATA" | jq '.summary.totalIflows')
+        WITH_ROLE=$(echo "$DATA" | jq '.summary.iflowsWithRole')
+        UNRESOLVED=$(echo "$DATA" | jq '.summary.iflowsParamUnresolved')
+        NOT_IN_GIT=$(echo "$DATA" | jq '.summary.iflowsNotInGit')
+
+        echo "  With role: $WITH_ROLE  Unresolved: $UNRESOLVED  Not in Git: $NOT_IN_GIT"
+
+        PKG_COUNT=$(echo "$DATA" | jq '.packages | length')
+
+        # ── Build HTML ──
+        HTML='<!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>IFlow Roles — Integration Suite</title>
+          <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🔑%3C/text%3E%3C/svg%3E">
+          <style>
+            :root {
+              --bg-primary: #ffffff;
+              --bg-secondary: #f6f8fa;
+              --bg-header: #24292f;
+              --text-primary: #24292f;
+              --text-secondary: #57606a;
+              --border-color: #d0d7de;
+              --accent-blue: #0969da;
+              --error-bg: #ffebe9;
+              --error-border: #cf222e;
+              --ok-bg: #dafbe1;
+              --ok-border: #1a7f37;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+              color: var(--text-primary);
+              background: var(--bg-secondary);
+              line-height: 1.5;
+            }
+            .header { background: var(--bg-header); color: #fff; padding: 24px 32px; margin-bottom: 24px; }
+            .header h1 { font-size: 24px; margin-bottom: 8px; }
+            .header .meta { font-size: 14px; color: #8b949e; }
+            .header .meta span { margin-right: 16px; }
+            .header .scope-note { font-size: 12px; color: #8b949e; margin-top: 8px; font-style: italic; }
+            .page-nav { margin-top: 12px; display: flex; gap: 4px; }
+            .nav-tab { display: inline-block; padding: 6px 16px; border-radius: 6px 6px 0 0; color: #8b949e; text-decoration: none; font-size: 14px; font-weight: 500; background: rgba(255,255,255,0.08); transition: background 0.15s, color 0.15s; }
+            .nav-tab:hover { background: rgba(255,255,255,0.16); color: #fff; }
+            .nav-tab.active { background: rgba(255,255,255,0.22); color: #fff; }
+            .container { max-width: 1200px; margin: 0 auto; padding: 0 24px 48px; }
+            .summary-section { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+            .summary-section h2 { margin-bottom: 12px; font-size: 18px; }
+            .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+            .summary-card { background: var(--bg-secondary); border: 2px solid var(--border-color); border-radius: 6px; padding: 14px 16px; text-align: center; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; user-select: none; }
+            .summary-card:hover { border-color: var(--accent-blue); box-shadow: 0 0 0 1px var(--accent-blue); }
+            .summary-card.active { border-color: var(--accent-blue); box-shadow: 0 0 0 2px var(--accent-blue); background: #ddf4ff; }
+            .summary-card .number { font-size: 26px; font-weight: 700; color: var(--accent-blue); }
+            .summary-card .label { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+            .filter-bar { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+            .filter-bar input[type="text"] { padding: 7px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; flex: 1; min-width: 180px; }
+            .filter-bar label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+            .filter-group-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); padding: 0 2px; white-space: nowrap; }
+            .roles-wrap { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; overflow-x: auto; margin-bottom: 16px; }
+            table.roles-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 540px; }
+            table.roles-table thead th { text-align: left; padding: 10px 14px; background: var(--bg-secondary); border-bottom: 2px solid var(--border-color); font-weight: 600; white-space: nowrap; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+            tr.pkg-row td { padding: 9px 14px; background: #eaeef2; font-weight: 600; font-size: 13px; border-top: 2px solid var(--border-color); vertical-align: middle; }
+            tr.pkg-row:first-child td { border-top: none; }
+            tr.pkg-row.pkg-error td { background: #ffd7d5; border-top-color: var(--error-border); border-left: 3px solid var(--error-border); }
+            tr.iflow-row td { padding: 7px 14px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+            tr.iflow-row:last-child td { border-bottom: none; }
+            tr.iflow-row:hover td { background: #f6f8fa; }
+            tr.iflow-row.ok-row td { background: #f0fdf4; }
+            tr.iflow-row.ok-row:hover td { background: #dcfce7; }
+            tr.iflow-row.error-row td { background: #fff5f5; }
+            tr.iflow-row.error-row:hover td { background: #ffe4e4; }
+            td.col-name { max-width: 340px; word-break: break-word; overflow-wrap: break-word; }
+            td.col-id { max-width: 260px; word-break: break-word; }
+            td.col-role { max-width: 360px; word-break: break-word; overflow-wrap: break-word; }
+            code { background: #eff1f3; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+            .pkg-count { float: right; font-weight: 400; font-size: 12px; color: var(--text-secondary); }
+            .legend { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px 20px; font-size: 13px; color: var(--text-secondary); }
+            .legend span { margin-right: 20px; }
+            .no-results { padding: 32px; text-align: center; color: var(--text-secondary); font-size: 14px; display: none; }
+            .copyable { cursor: pointer; user-select: none; transition: background 0.15s; }
+            .copyable:hover { background: #d0d7de; border-radius: 4px; }
+            .copy-toast { position: fixed; top: 20px; right: 20px; background: #1a7f37; color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 13px; z-index: 9999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+            .copy-toast.show { opacity: 1; }
+            .id-menu { position: fixed; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 10000; display: none; min-width: 180px; padding: 4px 0; font-size: 13px; }
+            .id-menu.show { display: block; }
+            .id-menu-item { display: block; width: 100%; padding: 8px 14px; border: none; background: none; text-align: left; cursor: pointer; font-size: 13px; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+            .id-menu-item:hover { background: var(--bg-secondary); }
+            .id-menu-sep { height: 1px; background: var(--border-color); margin: 4px 0; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>🔑 IFlow Roles</h1>
+            <div class="meta">'
+
+        if [ -n "$GH_REPO" ]; then
+          HTML+="<span>📁 <strong>${GH_REPO}</strong></span>"
+        fi
+        HTML+="<span>📅 ${GENERATED}</span>"
+        HTML+="<span>🌍 ${DEV_ENV}</span>"
+        HTML+='</div>
+            <div class="scope-note">ℹ️ Shows the configured userRole per IFlow. IFlows without a role are not listed.</div>
+            <nav class="page-nav">
+              <a class="nav-tab" href="index.html">📊 Dashboard</a>
+              <a class="nav-tab active" href="roles.html" aria-current="page">🔑 IFlow Roles</a>
+            </nav>
+          </div>
+          <div id="copyToast" class="copy-toast"></div>
+          <div id="idMenu" class="id-menu"></div>
+          <div class="container">'
+
+        # ── Summary section ──
+        HTML+="
+            <div class=\"summary-section\">
+              <h2>📈 Summary</h2>
+              <div class=\"summary-grid\">
+                <div class=\"summary-card\" data-card-filter=\"defined\" onclick=\"toggleCardFilter('defined')\">
+                  <div class=\"number\">${WITH_ROLE}</div>
+                  <div class=\"label\">✅ Role Defined</div>
+                </div>"
+
+        if [ "$UNRESOLVED" -gt 0 ]; then
+          HTML+="
+                <div class=\"summary-card\" data-card-filter=\"error\" onclick=\"toggleCardFilter('error')\">
+                  <div class=\"number\">${UNRESOLVED}</div>
+                  <div class=\"label\">🔴 Unresolved Param</div>
+                </div>"
+        fi
+
+        HTML+="
+              </div>
+            </div>"
+
+        # ── Filter bar ──
+        HTML+='
+            <div class="filter-bar">
+              <input type="text" id="searchInput" placeholder="🔍 Package or IFlow name / ID..." oninput="filterRoles()">
+              <input type="text" id="roleInput" placeholder="🔍 Role (=value exact)" oninput="filterRoles()" style="max-width:200px;">
+              <span class="filter-group-label">Show:</span>
+              <label><input type="checkbox" id="showDefined" onchange="filterRoles()"> ✅ Role defined</label>
+              <label><input type="checkbox" id="showError" onchange="filterRoles()"> 🔴 Unresolved</label>
+            </div>'
+
+        # ── Roles table ──
+        HTML+='
+            <div class="roles-wrap">
+              <table class="roles-table">
+                <thead>
+                  <tr>
+                    <th style="width:35%">IFlow Name</th>
+                    <th style="width:28%">IFlow ID</th>
+                    <th>User Role</th>
+                  </tr>
+                </thead>
+                <tbody id="rolesBody">'
+
+        for pkg_idx in $(seq 0 $((PKG_COUNT - 1))); do
+          PKG=$(echo "$DATA" | jq -c ".packages[$pkg_idx]")
+          PKG_ID=$(echo "$PKG" | jq -r '.id')
+          PKG_NAME=$(echo "$PKG" | jq -r '.name')
+
+          VISIBLE_COUNT=$(echo "$PKG" | jq '[.iflows[] | select(.roleStatus == "defined" or .roleStatus == "error")] | length')
+
+          if [ "$VISIBLE_COUNT" -eq 0 ]; then
+            continue
+          fi
+
+          HAS_ERROR=$(echo "$PKG" | jq -r '[.iflows[] | select(.roleStatus == "error")] | length > 0 | if . then "true" else "false" end')
+
+          PKG_ROW_CLASS="pkg-row"
+          if [ "$HAS_ERROR" = "true" ]; then
+            PKG_ROW_CLASS="pkg-row pkg-error"
+          fi
+
+          if [ "$VISIBLE_COUNT" -eq 1 ]; then PLURAL_S=""; else PLURAL_S="s"; fi
+
+          HTML+="
+                  <tr class=\"${PKG_ROW_CLASS}\" data-pkg-id=\"${PKG_ID}\">
+                    <td colspan=\"3\">
+                      <span class=\"pkg-count\">${VISIBLE_COUNT} IFlow${PLURAL_S}</span>
+                      📦 ${PKG_NAME} &nbsp;<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','')\" title=\"Click for options\">${PKG_ID}</code>
+                    </td>
+                  </tr>"
+
+          IFLOW_COUNT=$(echo "$PKG" | jq '.iflows | length')
+          for iflow_idx in $(seq 0 $((IFLOW_COUNT - 1))); do
+            IFLOW=$(echo "$PKG" | jq -c ".iflows[$iflow_idx]")
+            ROLE_STATUS=$(echo "$IFLOW" | jq -r '.roleStatus')
+
+            if [ "$ROLE_STATUS" = "none" ] || [ "$ROLE_STATUS" = "not-in-git" ]; then
+              continue
+            fi
+
+            IFLOW_ID=$(echo "$IFLOW" | jq -r '.id')
+            IFLOW_NAME=$(echo "$IFLOW" | jq -r '.name')
+            ROLE_VALUE=$(echo "$IFLOW" | jq -r '.userRole')
+            ROLE_SOURCE=$(echo "$IFLOW" | jq -r '.roleSource')
+            # HTML-encode values used in data-* attributes to guard against embedded double quotes
+            IFLOW_NAME_ATTR=$(echo "$IFLOW_NAME" | sed 's/"/\&quot;/g')
+            PKG_NAME_ATTR=$(echo "$PKG_NAME" | sed 's/"/\&quot;/g')
+            ROLE_VALUE_ATTR=$(echo "$ROLE_VALUE" | sed 's/"/\&quot;/g')
+
+            case "$ROLE_STATUS" in
+              defined)
+                ROW_CLASS="iflow-row ok-row"
+                NAME_PREFIX="✅ "
+                ROLE_DISPLAY="<code>${ROLE_VALUE}</code>"
+                if [ "$ROLE_SOURCE" = "param-resolved" ]; then
+                  ROLE_DISPLAY="${ROLE_DISPLAY} <span style=\"font-size:11px;color:var(--text-secondary);\">(ext.)</span>"
+                fi
+                ;;
+              error)
+                ROW_CLASS="iflow-row error-row"
+                NAME_PREFIX="🔴 "
+                ROLE_DISPLAY="<code>${ROLE_VALUE}</code> <span style=\"font-size:11px;color:#cf222e;\">⚠️ unresolved</span>"
+                ;;
+              *)
+                ROW_CLASS="iflow-row"
+                NAME_PREFIX=""
+                ROLE_DISPLAY="—"
+                ;;
+            esac
+
+            HTML+="
+                  <tr class=\"${ROW_CLASS}\" data-pkg-id=\"${PKG_ID}\" data-pkg-text=\"${PKG_ID} ${PKG_NAME_ATTR}\" data-iflow=\"${IFLOW_ID} ${IFLOW_NAME_ATTR}\" data-role-status=\"${ROLE_STATUS}\" data-role=\"${ROLE_VALUE_ATTR}\">
+                    <td class=\"col-name\">${NAME_PREFIX}${IFLOW_NAME}</td>
+                    <td class=\"col-id\"><code class=\"copyable\" onclick=\"showIdMenu(event,'iflow','${IFLOW_ID}','${PKG_ID}')\" title=\"Click for options\">${IFLOW_ID}</code></td>
+                    <td class=\"col-role\">${ROLE_DISPLAY}</td>
+                  </tr>"
+          done
+        done
+
+        HTML+='
+                </tbody>
+              </table>
+              <div class="no-results" id="noResults">No IFlows match the current filter.</div>
+            </div>'
+
+        # ── Legend ──
+        HTML+='
+            <div class="legend">
+              <span>✅ Role defined</span>
+              <span>🔴 Externalized parameter not found in ConfigParams</span>
+              <span style="font-size:12px;">(ext.) = value resolved from externalized parameter</span>
+            </div>'
+
+        # ── Embed devUrl JS variable ──
+        HTML+="
+            <script>var devUrl = \"${DEV_URL}\";</script>"
+
+        # ── JavaScript ──
+        HTML+='
+            <script>
+              var activeCardFilter = null;
+              var copyToast = null;
+              var idMenu = null;
+
+              function copyId(text) {
+                navigator.clipboard.writeText(text).then(function() {
+                  if (!copyToast) { copyToast = document.getElementById("copyToast"); }
+                  copyToast.textContent = "📋 Copied: " + text;
+                  copyToast.classList.add("show");
+                  setTimeout(function() { copyToast.classList.remove("show"); }, 1500);
+                });
+                hideIdMenu();
+              }
+
+              function showIdMenu(event, type, id, packageId) {
+                event.stopPropagation();
+                event.preventDefault();
+                if (!idMenu) { idMenu = document.getElementById("idMenu"); }
+                var html = "<button class=\"id-menu-item\" onclick=\"copyId(\x27" + id + "\x27)\">📋 Copy ID</button>";
+                if (devUrl) {
+                  html += "<div class=\"id-menu-sep\"></div>";
+                  var link = type === "package"
+                    ? devUrl + "/shell/design/contentpackage/" + encodeURIComponent(id)
+                    : devUrl + "/shell/design/contentpackage/" + encodeURIComponent(packageId) + "/integrationflows/" + encodeURIComponent(id);
+                  html += "<a class=\"id-menu-item\" href=\"" + link + "\" target=\"_blank\" onclick=\"hideIdMenu()\">🔗 Open in DEV</a>";
+                }
+                idMenu.innerHTML = html;
+                idMenu.style.left = event.clientX + "px";
+                idMenu.style.top = event.clientY + "px";
+                idMenu.classList.add("show");
+                setTimeout(function() {
+                  var r = idMenu.getBoundingClientRect();
+                  if (r.right  > window.innerWidth)  { idMenu.style.left = (window.innerWidth  - r.width  - 8) + "px"; }
+                  if (r.bottom > window.innerHeight)  { idMenu.style.top  = (window.innerHeight - r.height - 8) + "px"; }
+                }, 0);
+              }
+
+              function hideIdMenu() {
+                if (!idMenu) { idMenu = document.getElementById("idMenu"); }
+                idMenu.classList.remove("show");
+              }
+
+              document.addEventListener("click", function(e) {
+                if (idMenu && !idMenu.contains(e.target)) { hideIdMenu(); }
+              });
+              document.addEventListener("keydown", function(e) {
+                if (e.key === "Escape") { hideIdMenu(); }
+              });
+
+              function toggleCardFilter(filterType) {
+                document.querySelectorAll(".summary-card").forEach(function(c) { c.classList.remove("active"); });
+                activeCardFilter = (activeCardFilter === filterType) ? null : filterType;
+                if (activeCardFilter) {
+                  var card = document.querySelector(".summary-card[data-card-filter=\"" + filterType + "\"]");
+                  if (card) card.classList.add("active");
+                }
+                filterRoles();
+              }
+
+              function filterRoles() {
+                var query     = document.getElementById("searchInput").value.toLowerCase();
+                var roleRaw   = document.getElementById("roleInput").value;
+                var roleExact = roleRaw.startsWith("=");
+                var roleQuery = roleExact ? roleRaw.slice(1).toLowerCase() : roleRaw.toLowerCase();
+                var showDef   = document.getElementById("showDefined").checked;
+                var showErr   = document.getElementById("showError").checked;
+                var hasFilter = showDef || showErr;
+                var pkgHasVisible = {};
+
+                document.querySelectorAll("tr.iflow-row").forEach(function(row) {
+                  var pkgId      = row.getAttribute("data-pkg-id");
+                  var iflowText  = (row.getAttribute("data-iflow")    || "").toLowerCase();
+                  var pkgText    = (row.getAttribute("data-pkg-text") || "").toLowerCase();
+                  var roleText   = (row.getAttribute("data-role")     || "").toLowerCase();
+                  var status     = row.getAttribute("data-role-status") || "";
+
+                  var matchesQuery  = !query     || pkgText.includes(query)     || iflowText.includes(query);
+                  var matchesRole   = !roleQuery || (roleExact ? roleText === roleQuery : roleText.includes(roleQuery));
+                  var matchesStatus = !hasFilter || (showDef && status === "defined") || (showErr && status === "error");
+                  var matchesCard   = !activeCardFilter || status === activeCardFilter;
+
+                  var visible = matchesQuery && matchesRole && matchesStatus && matchesCard;
+                  row.style.display = visible ? "" : "none";
+                  if (visible) { pkgHasVisible[pkgId] = true; }
+                });
+
+                var anyVisible = false;
+                document.querySelectorAll("tr.pkg-row").forEach(function(row) {
+                  var pkgId = row.getAttribute("data-pkg-id");
+                  var show = !!pkgHasVisible[pkgId];
+                  row.style.display = show ? "" : "none";
+                  if (show) anyVisible = true;
+                });
+
+                var noResults = document.getElementById("noResults");
+                if (noResults) { noResults.style.display = anyVisible ? "none" : "block"; }
+              }
+            </script>
+          </div>
+        </body>
+        </html>'
+
+        mkdir -p "$(dirname "$OUTPUT_FILE")"
+        echo "$HTML" > "$OUTPUT_FILE"
+        echo "✅ Roles page generated: $OUTPUT_FILE"
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+
+        if git diff --quiet -- "$OUTPUT_FILE" 2>/dev/null; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi

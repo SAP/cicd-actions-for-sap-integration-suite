@@ -1,0 +1,1096 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-10 - Initial release
+# 1.1.0 - 2026-05-06 - Add page navigation bar linking to roles.html
+#
+name: Generate Dashboard
+description: |
+  Generates a rich HTML dashboard from a consolidated JSON data file
+  (produced by merge-dashboard-data). The dashboard is BTP-driven: it
+  shows ALL packages and IFlows discovered on BTP tenants across all
+  environments, enriched with Git deployment config. Packages or IFlows
+  found on BTP but missing from Git are highlighted as important findings.
+  The HTML output is suitable for GitHub Pages deployment.
+
+inputs:
+  dashboard-data-file:
+    description: "Path to the consolidated dashboard-data.json file (from merge-dashboard-data)"
+    required: true
+  environments:
+    description: "JSON array of environment names"
+    required: true
+  output-file:
+    description: "Path to write the generated HTML dashboard file"
+    required: false
+    default: "docs/index.html"
+  github-repository:
+    description: "GitHub repository name (owner/repo) for display in header"
+    required: false
+    default: ""
+
+outputs:
+  file:
+    description: "Path to the generated HTML dashboard file"
+    value: ${{ steps.generate.outputs.file }}
+  changed:
+    description: "Whether the dashboard content changed (true/false)"
+    value: ${{ steps.generate.outputs.changed }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate HTML dashboard
+      id: generate
+      shell: bash
+      env:
+        DASHBOARD_DATA_FILE: ${{ inputs.dashboard-data-file }}
+        ENVIRONMENTS: ${{ inputs.environments }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        GH_REPO: ${{ inputs.github-repository }}
+      run: |
+        echo "📊 Generating HTML dashboard..."
+
+        # ── Load consolidated data ──
+        if [ ! -f "$DASHBOARD_DATA_FILE" ]; then
+          echo "❌ Dashboard data file not found: $DASHBOARD_DATA_FILE"
+          exit 1
+        fi
+
+        DATA=$(<"$DASHBOARD_DATA_FILE")
+
+        # Sort environments: pipeline order (DEV → QA → TST → STG → PRD), fallback alphabetical
+        ENVIRONMENTS=$(echo "$ENVIRONMENTS" | jq '
+          def env_priority:
+            ascii_upcase |
+            if test("^DEV") then 1
+            elif test("^QA") then 2
+            elif test("^TST|^TEST") then 3
+            elif test("^STG|^STAG|^PRE") then 4
+            elif test("^PRD|^PROD") then 5
+            else 3 end;
+          sort_by(env_priority, .)
+        ')
+        ENV_LIST=$(echo "$ENVIRONMENTS" | jq -r '.[]')
+        ENV_COUNT=$(echo "$ENVIRONMENTS" | jq 'length')
+        ENV_URLS=$(echo "$DATA" | jq -r '.environmentUrls // {}')
+        GENERATED=$(echo "$DATA" | jq -r '.generated')
+        TOTAL_PKGS=$(echo "$DATA" | jq '.summary.totalPackageCount')
+        BTP_PKGS=$(echo "$DATA" | jq '.summary.btpPackageCount')
+        GIT_ONLY_PKGS=$(echo "$DATA" | jq '.summary.gitOnlyPackageCount')
+
+        echo "  Environments: $(echo "$ENVIRONMENTS" | jq -r 'join(", ")')"
+        echo "  Total packages: $TOTAL_PKGS"
+
+        # ── Count packages/iflows without Git config ──
+        NO_GIT_PKG_COUNT=$(echo "$DATA" | jq '[.packages[] | select(.source == "btp" and .gitConfig.found == false)] | length')
+        NO_GIT_IFLOW_COUNT=$(echo "$DATA" | jq '[.packages[].iflows[] | select(.source == "btp" and .hasGitConfig == false)] | length')
+        # Packages that ARE in Git but have some IFlows missing from Git
+        PARTIAL_GIT_PKG_COUNT=$(echo "$DATA" | jq '[.packages[] | select(.source == "btp" and .gitConfig.found == true and ([.iflows[] | select(.hasGitConfig == false)] | length > 0))] | length')
+        # Combined: packages with any Git config issue
+        GIT_ISSUES_COUNT=$((NO_GIT_PKG_COUNT + PARTIAL_GIT_PKG_COUNT))
+
+        # ── Count packages not found on all environments ──
+        NOT_ALL_ENVS_COUNT=$(echo "$DATA" | jq --argjson envs "$ENVIRONMENTS" '[.packages[] | select(.source == "btp" and ((.foundOnEnvironments // []) | length) < ($envs | length) and ((.foundOnEnvironments // []) | length) > 0)] | length')
+
+        # ── Helper functions ──
+        deploy_badge() {
+          case "$1" in
+            true)  echo '✅ true' ;;
+            false) echo '❌ false' ;;
+            *)     echo '—' ;;
+          esac
+        }
+
+        loglevel_badge() {
+          case "$1" in
+            ERROR) echo '🔴 ERROR' ;;
+            WARN)  echo '🟡 WARN' ;;
+            INFO)  echo '🔵 INFO' ;;
+            DEBUG) echo '🟢 DEBUG' ;;
+            TRACE) echo '🟣 TRACE' ;;
+            null|"") echo '—' ;;
+            *)     echo "$1" ;;
+          esac
+        }
+
+        runtime_badge() {
+          local status="$1"
+          local version="$2"
+          if [ -z "$status" ] || [ "$status" = "null" ]; then
+            echo '—'
+          elif [ "$status" = "STARTED" ]; then
+            if [ -n "$version" ] && [ "$version" != "null" ]; then
+              echo "✅ STARTED v${version}"
+            else
+              echo '✅ STARTED'
+            fi
+          elif [ "$status" = "ERROR" ]; then
+            if [ -n "$version" ] && [ "$version" != "null" ]; then
+              echo "🔴 ERROR v${version}"
+            else
+              echo '🔴 ERROR'
+            fi
+          elif [ "$status" = "NOT_DEPLOYED" ]; then
+            echo '⚫ N/A'
+          else
+            if [ -n "$version" ] && [ "$version" != "null" ]; then
+              echo "${status} v${version}"
+            else
+              echo "$status"
+            fi
+          fi
+        }
+
+        format_badge() {
+          case "$1" in
+            new)  echo '🟢 new' ;;
+            old)  echo '🟡 old' ;;
+            *)    echo '⚪ none' ;;
+          esac
+        }
+
+        # ── Build HTML ──
+        HTML='<!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Integration Suite Dashboard</title>
+          <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E📊%3C/text%3E%3C/svg%3E">
+          <style>
+            :root {
+              --bg-primary: #ffffff;
+              --bg-secondary: #f6f8fa;
+              --bg-header: #24292f;
+              --text-primary: #24292f;
+              --text-secondary: #57606a;
+              --text-header: #ffffff;
+              --border-color: #d0d7de;
+              --accent-blue: #0969da;
+              --warning-bg: #fff8c5;
+              --warning-border: #d4a72c;
+              --error-bg: #ffebe9;
+              --error-border: #cf222e;
+              --ok-bg: #dafbe1;
+              --ok-border: #1a7f37;
+              --notingit-bg: #f0f0f0;
+              --notingit-border: #8b949e;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+              color: var(--text-primary);
+              background: var(--bg-secondary);
+              line-height: 1.5;
+            }
+            .header {
+              background: var(--bg-header);
+              color: var(--text-header);
+              padding: 24px 32px;
+              margin-bottom: 24px;
+            }
+            .header h1 { font-size: 24px; margin-bottom: 8px; }
+            .header .meta { font-size: 14px; color: #8b949e; }
+            .header .meta span { margin-right: 16px; }
+            .header .scope-note { font-size: 12px; color: #8b949e; margin-top: 8px; font-style: italic; }
+            .container { max-width: 1400px; margin: 0 auto; padding: 0 24px 48px; }
+            .package-section {
+              background: var(--bg-primary);
+              border: 1px solid var(--border-color);
+              border-radius: 8px;
+              margin-bottom: 20px;
+              overflow: hidden;
+            }
+            .package-header {
+              padding: 16px 20px;
+              border-bottom: 1px solid var(--border-color);
+              background: var(--bg-secondary);
+              cursor: pointer;
+              user-select: none;
+            }
+            .package-header:hover { background: #eaeef2; }
+            .package-header h2 { font-size: 18px; margin-bottom: 4px; }
+            .package-header .meta { font-size: 13px; color: var(--text-secondary); }
+            .package-header.warning { background: var(--warning-bg); border-left: 4px solid var(--warning-border); }
+            .package-header.warning:hover { background: #fff0a0; }
+            .package-header.error { background: var(--error-bg); border-left: 4px solid var(--error-border); }
+            .package-header.error:hover { background: #ffd7d5; }
+            .package-header.ok { background: var(--ok-bg); border-left: 4px solid var(--ok-border); }
+            .package-header.ok:hover { background: #c8f5d0; }
+            .package-header.not-in-git { background: var(--notingit-bg); border-left: 4px solid var(--notingit-border); }
+            .package-header.not-in-git:hover { background: #e6e6e6; }
+            .toggle-arrow {
+              display: inline-block;
+              width: 20px;
+              font-size: 14px;
+              transition: transform 0.2s;
+            }
+            .copyable { cursor: pointer; position: relative; user-select: none; transition: background 0.15s; }
+            .copyable:hover { background: #d0d7de; border-radius: 4px; }
+            .copy-toast { position: fixed; top: 20px; right: 20px; background: #1a7f37; color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 13px; z-index: 9999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+            .copy-toast.show { opacity: 1; }
+            .id-menu { position: fixed; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 10000; display: none; min-width: 180px; padding: 4px 0; font-size: 13px; }
+            .id-menu.show { display: block; }
+            .id-menu-item { display: block; width: 100%; padding: 8px 14px; border: none; background: none; text-align: left; cursor: pointer; font-size: 13px; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+            .id-menu-item:hover { background: var(--bg-secondary); }
+            .id-menu-sep { height: 1px; background: var(--border-color); margin: 4px 0; }
+            .json-template-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+            .json-template-link:hover { color: var(--accent-blue); }
+            .json-template-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 10001; display: none; align-items: center; justify-content: center; }
+            .json-template-overlay.show { display: flex; }
+            .json-template-popover { background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); max-width: 620px; width: 90%; max-height: 80vh; overflow-y: auto; padding: 24px; position: relative; }
+            .json-template-popover h3 { font-size: 16px; margin-bottom: 4px; }
+            .json-template-popover .subtitle { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+            .json-template-popover pre { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 16px; border-radius: 6px; font-size: 13px; overflow-x: auto; line-height: 1.6; margin-bottom: 16px; white-space: pre; }
+            .json-template-popover .btn-row { display: flex; gap: 8px; align-items: center; }
+            .json-template-popover .btn-copy { padding: 8px 16px; background: var(--accent-blue); color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+            .json-template-popover .btn-copy:hover { background: #0860ca; }
+            .json-template-popover .btn-close-bottom { padding: 8px 16px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; cursor: pointer; }
+            .json-template-popover .btn-close-bottom:hover { background: #eaeef2; }
+            .json-template-popover .btn-x { position: absolute; top: 12px; right: 16px; background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-secondary); line-height: 1; }
+            .json-template-popover .btn-x:hover { color: var(--text-primary); }
+            .json-template-popover .note { font-size: 12px; color: var(--text-secondary); margin-top: 12px; line-height: 1.5; }
+            .package-section.expanded .toggle-arrow { transform: rotate(90deg); }
+            .package-body {
+              display: none;
+              overflow-x: auto;
+            }
+            .package-section.expanded .package-body {
+              display: block;
+            }
+            .package-section.collapsed .package-header {
+              border-bottom: none;
+            }
+            .section-divider {
+              padding: 16px 20px;
+              background: var(--bg-secondary);
+              border-bottom: 1px solid var(--border-color);
+              font-size: 16px;
+              font-weight: 600;
+              color: var(--text-secondary);
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 13px;
+              min-width: 600px;
+            }
+            th {
+              text-align: left;
+              padding: 10px 12px;
+              background: var(--bg-secondary);
+              border-bottom: 2px solid var(--border-color);
+              font-weight: 600;
+              white-space: nowrap;
+            }
+            td {
+              padding: 8px 12px;
+              border-bottom: 1px solid var(--border-color);
+              vertical-align: top;
+            }
+            td.iflow-name, td.iflow-id {
+              max-width: 400px;
+              word-break: break-word;
+              overflow-wrap: break-word;
+            }
+            tr:last-child td { border-bottom: none; }
+            tr:hover td { background: #f0f3f6; }
+            .env-cell { white-space: nowrap; line-height: 1.8; }
+            .env-cell .row-item { display: block; }
+            .env-not-found { color: #8b949e; font-style: italic; font-size: 12px; text-align: center; vertical-align: middle; }
+            code {
+              background: #eff1f3;
+              padding: 2px 6px;
+              border-radius: 4px;
+              font-size: 12px;
+            }
+            .warning-row td { background: var(--warning-bg); }
+            .error-row td { background: var(--error-bg); }
+            .ok-row td { background: var(--ok-bg); }
+            .notingit-row td { background: var(--notingit-bg); }
+            .filter-group-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); padding: 0 4px; }
+            .filter-separator { font-size: 14px; color: var(--text-secondary); padding: 0 6px; }
+            .summary-section {
+              background: var(--bg-primary);
+              border: 1px solid var(--border-color);
+              border-radius: 8px;
+              padding: 20px;
+              margin-bottom: 20px;
+            }
+            .summary-section h2 { margin-bottom: 12px; font-size: 18px; }
+            .summary-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+              gap: 12px;
+            }
+            .summary-card {
+              background: var(--bg-secondary);
+              border: 2px solid var(--border-color);
+              border-radius: 6px;
+              padding: 16px;
+              text-align: center;
+              cursor: pointer;
+              transition: border-color 0.2s, box-shadow 0.2s;
+              user-select: none;
+            }
+            .summary-card:hover { border-color: var(--accent-blue); box-shadow: 0 0 0 1px var(--accent-blue); }
+            .summary-card.active { border-color: var(--accent-blue); box-shadow: 0 0 0 2px var(--accent-blue); background: #ddf4ff; }
+            .summary-card .number { font-size: 28px; font-weight: 700; color: var(--accent-blue); }
+            .summary-card .label { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+            .summary-card .sub-label { font-size: 11px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4; }
+            .alert {
+              background: var(--warning-bg);
+              border: 1px solid var(--warning-border);
+              border-radius: 6px;
+              padding: 12px 16px;
+              margin-top: 16px;
+              font-size: 14px;
+            }
+            .legend {
+              background: var(--bg-primary);
+              border: 1px solid var(--border-color);
+              border-radius: 8px;
+              padding: 20px;
+            }
+            .legend h2 { margin-bottom: 12px; font-size: 18px; }
+            .legend table { font-size: 13px; }
+            .legend td, .legend th { padding: 4px 12px; }
+            .filter-bar {
+              display: flex;
+              gap: 12px;
+              margin-bottom: 20px;
+              flex-wrap: wrap;
+              align-items: center;
+            }
+            .filter-bar input[type="text"] {
+              padding: 8px 12px;
+              border: 1px solid var(--border-color);
+              border-radius: 6px;
+              font-size: 14px;
+              flex: 1;
+              min-width: 200px;
+            }
+            .filter-bar label { font-size: 13px; color: var(--text-secondary); }
+            .filter-bar button {
+              padding: 6px 14px;
+              border: 1px solid var(--border-color);
+              border-radius: 6px;
+              background: var(--bg-primary);
+              font-size: 13px;
+              cursor: pointer;
+              white-space: nowrap;
+            }
+            .filter-bar button:hover { background: #eaeef2; }
+            .page-nav { margin-top: 12px; display: flex; gap: 4px; }
+            .nav-tab {
+              display: inline-block;
+              padding: 6px 16px;
+              border-radius: 6px 6px 0 0;
+              color: #8b949e;
+              text-decoration: none;
+              font-size: 14px;
+              font-weight: 500;
+              background: rgba(255,255,255,0.08);
+              transition: background 0.15s, color 0.15s;
+            }
+            .nav-tab:hover { background: rgba(255,255,255,0.16); color: #fff; }
+            .nav-tab.active { background: rgba(255,255,255,0.22); color: #fff; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>📊 Integration Suite Dashboard</h1>
+            <div class="meta">'
+
+        # Add header metadata
+        if [ -n "$GH_REPO" ]; then
+          HTML+="<span>📁 <strong>${GH_REPO}</strong></span>"
+        fi
+        HTML+="<span>📅 ${GENERATED}</span>"
+        # Build environment links (clickable if URL available)
+        ENV_LINKS=""
+        for env_name in $ENV_LIST; do
+          ENV_URL=$(echo "$ENV_URLS" | jq -r --arg e "$env_name" '.[$e] // ""')
+          if [ -n "$ENV_URL" ] && [ "$ENV_URL" != "" ]; then
+            ENV_LINKS+="<a href=\"${ENV_URL}/shell/home\" target=\"_blank\" style=\"color:#58a6ff;text-decoration:none;\">${env_name}</a>, "
+          else
+            ENV_LINKS+="${env_name}, "
+          fi
+        done
+        ENV_LINKS=${ENV_LINKS%, }
+        HTML+="<span>🌍 ${ENV_LINKS}</span>"
+        HTML+="<span>📦 ${BTP_PKGS} BTP packages"
+        if [ "$GIT_ONLY_PKGS" -gt 0 ]; then
+          HTML+=" (+${GIT_ONLY_PKGS} Git-only)"
+        fi
+        HTML+='</span>
+            </div>
+            <div class="scope-note">ℹ️ This dashboard covers Integration Flow (IFlow) artifacts only. Other artifact types (Value Mappings, Script Collections, etc.) are not included.</div>
+            <nav class="page-nav">
+              <a class="nav-tab active" href="index.html" aria-current="page">📊 Dashboard</a>
+              <a class="nav-tab" href="roles.html">🔑 IFlow Roles</a>
+            </nav>
+          </div>
+          <div id="copyToast" class="copy-toast"></div>
+          <div id="idMenu" class="id-menu"></div>
+          <div id="jsonTemplateOverlay" class="json-template-overlay" onclick="if(event.target===this)hideJsonTemplate()">
+            <div class="json-template-popover">
+              <button class="btn-x" onclick="hideJsonTemplate()" title="Close">&times;</button>
+              <h3>📋 Deployment JSON Template</h3>
+              <div class="subtitle">New JSON format with per-environment overrides. One file per package, containing this section for each IFlow.</div>
+              <pre><code id="jsonTemplateCode"></code></pre>
+              <div class="btn-row">
+                <button class="btn-copy" onclick="copyJsonTemplate()">📋 Copy to Clipboard</button>
+                <button class="btn-close-bottom" onclick="hideJsonTemplate()">Close</button>
+              </div>
+              <div class="note">💡 Replace <strong>&lt;your-iflow-artifact-id&gt;</strong> and <strong>&lt;Your IFlow Name&gt;</strong> with actual values.<br>Place this file at: <code>IntegrationPackages/&lt;PackageFolder&gt;/Configuration/Deployment_INTEGRATION_FLOW.json</code></div>
+            </div>
+          </div>
+          <div class="container">'
+
+        # ── Summary section (at top) ──
+        HTML+="
+            <div class=\"summary-section\">
+              <h2>📈 Summary</h2>
+              <div class=\"summary-grid\">
+                <div class=\"summary-card\" data-card-filter=\"btp\" onclick=\"toggleCardFilter('btp')\">
+                  <div class=\"number\">${BTP_PKGS}</div>
+                  <div class=\"label\">BTP Packages</div>
+                </div>"
+        if [ "$NOT_ALL_ENVS_COUNT" -gt 0 ]; then
+          HTML+="
+                <div class=\"summary-card\" data-card-filter=\"not-all-envs\" onclick=\"toggleCardFilter('not-all-envs')\">
+                  <div class=\"number\">${NOT_ALL_ENVS_COUNT}</div>
+                  <div class=\"label\">Not on All Environments</div>
+                </div>"
+        fi
+        HTML+="
+                <div class=\"summary-card\" data-card-filter=\"git-issues\" onclick=\"toggleCardFilter('git-issues')\">
+                  <div class=\"number\">${GIT_ISSUES_COUNT}</div>
+                  <div class=\"label\">Git Config Issues</div>
+                  <div class=\"sub-label\">🔴 ${NO_GIT_PKG_COUNT} packages missing entirely</div>
+                  <div class=\"sub-label\">⚠️ ${PARTIAL_GIT_PKG_COUNT} packages with missing IFlows</div>
+                </div>"
+        if [ "$GIT_ONLY_PKGS" -gt 0 ]; then
+          HTML+="
+                <div class=\"summary-card\" data-card-filter=\"git-only\" onclick=\"toggleCardFilter('git-only')\">
+                  <div class=\"number\">${GIT_ONLY_PKGS}</div>
+                  <div class=\"label\">Git-Only Packages</div>
+                </div>"
+        fi
+        HTML+="
+              </div>"
+
+        if [ "$NO_GIT_PKG_COUNT" -gt 0 ] || [ "$NO_GIT_IFLOW_COUNT" -gt 0 ]; then
+          HTML+="
+              <div class=\"alert\">⚠️ <strong>Action required:</strong> ${NO_GIT_PKG_COUNT} package(s) and ${NO_GIT_IFLOW_COUNT} IFlow(s) found on BTP have no Git deployment configuration.</div>"
+        fi
+
+        HTML+="
+            </div>"
+
+        # ── Filter bar ──
+        HTML+='
+            <div class="filter-bar">
+              <input type="text" id="searchInput" placeholder="🔍 Filter by package or IFlow name/ID..." onkeyup="filterDashboard()">
+              <span class="filter-group-label">Status:</span>
+              <label><input type="checkbox" id="showNotInGit" onchange="toggleFilter(this,&apos;showErrors,showWarnings&apos;)"> ❓ Not in GIT</label>
+              <label><input type="checkbox" id="showErrors" onchange="toggleFilter(this,&apos;showNotInGit,showWarnings&apos;)"> 🔴 Errors</label>
+              <label><input type="checkbox" id="showWarnings" onchange="toggleFilter(this,&apos;showNotInGit,showErrors&apos;)"> ⚠️ Warnings</label>
+              <span class="filter-separator">+</span>
+              <span class="filter-group-label">LogLevel:</span>
+              <label><input type="checkbox" id="showLogLevelInfo" onchange="toggleFilter(this,&apos;showLogLevelError&apos;)"> 🔵 Info</label>
+              <label><input type="checkbox" id="showLogLevelError" onchange="toggleFilter(this,&apos;showLogLevelInfo&apos;)"> 🔴 Error</label>
+              <button onclick="expandAll()">📂 Expand All</button>
+              <button onclick="collapseAll()">📁 Collapse All</button>
+            </div>'
+
+        # ── Render each package ──
+        PKG_COUNT=$(echo "$DATA" | jq '.packages | length')
+
+        # Track if we need a git-only divider
+        RENDERED_GIT_ONLY_DIVIDER="false"
+
+        for pkg_idx in $(seq 0 $((PKG_COUNT - 1))); do
+          PKG=$(echo "$DATA" | jq -c ".packages[$pkg_idx]")
+          PKG_ID=$(echo "$PKG" | jq -r '.id')
+          PKG_NAME=$(echo "$PKG" | jq -r '.name')
+          PKG_NAME_JS="${PKG_NAME//\'/\\\'}"
+          PKG_SOURCE=$(echo "$PKG" | jq -r '.source')
+          GIT_FOUND=$(echo "$PKG" | jq -r '.gitConfig.found')
+          JSON_FORMAT=$(echo "$PKG" | jq -r '.gitConfig.jsonFormat')
+
+          # Get foundOnEnvironments and compute missing environments
+          PKG_FOUND_ENVS=$(echo "$PKG" | jq -r '(.foundOnEnvironments // []) | join(",")')
+          PKG_MISSING_ENVS=$(echo "$PKG" | jq -r --argjson envs "$ENVIRONMENTS" '($envs - (.foundOnEnvironments // [])) | join(",")')
+          PKG_MISSING_ENVS_DISPLAY=$(echo "$PKG" | jq -r --argjson envs "$ENVIRONMENTS" '($envs - (.foundOnEnvironments // [])) | join(", ")')
+          PKG_HAS_MISSING_ENVS="false"
+          if [ -n "$PKG_MISSING_ENVS" ] && [ "$PKG_SOURCE" = "btp" ]; then
+            PKG_HAS_MISSING_ENVS="true"
+          fi
+
+          # Check if any iflow has no git config
+          HAS_NOGIT_IFLOWS=$(echo "$PKG" | jq -r '[.iflows[] | select(.hasGitConfig == false)] | length > 0 | if . then "true" else "false" end')
+
+          # Check if any iflow has runtimeStatus ERROR in any environment
+          PKG_HAS_ERROR=$(echo "$PKG" | jq -r --argjson envs "$ENVIRONMENTS" '
+            [.iflows[]? |
+              [$envs[] as $e | .environments[$e].runtimeStatus] | any(. == "ERROR")
+            ] | any
+            | if . then "true" else "false" end
+          ')
+
+            # Check if any iflow has different runtimeVersion across environments (only version triggers warning)
+            # Only compare versions from environments where the IFlow has an active runtime (not NOT_DEPLOYED/null)
+            PKG_HAS_DIFF=$(echo "$PKG" | jq -r --argjson envs "$ENVIRONMENTS" '
+              def has_diff: [.[] | if . == null or . == "" then "__nil__" else . end] | unique | length > 1;
+              [.iflows[]? |
+                ([
+                  $envs[] as $e |
+                  .environments[$e] |
+                  select(.runtimeStatus != null and .runtimeStatus != "" and .runtimeStatus != "NOT_DEPLOYED") |
+                  .runtimeVersion
+                ] | has_diff)
+              ] | any
+              | if . then "true" else "false" end
+            ')
+
+          # Check if any iflow has config mismatch (deploy config vs BTP reality)
+          PKG_HAS_CONFIG_MISMATCH=$(echo "$PKG" | jq -r --argjson envs "$ENVIRONMENTS" '
+            [.iflows[]? |
+              [$envs[] as $e |
+                (.environments[$e].deploy) as $deploy |
+                (.environments[$e].runtimeStatus // "") as $status |
+                (($deploy == "true" or $deploy == true) and ($status == "NOT_DEPLOYED" or $status == "" or $status == null)) or
+                (($deploy == "false" or $deploy == false) and ($status == "STARTED"))
+              ] | any
+            ] | any
+            | if . then "true" else "false" end
+          ')
+
+          # Add git-only section divider
+          if [ "$PKG_SOURCE" = "git-only" ] && [ "$RENDERED_GIT_ONLY_DIVIDER" = "false" ]; then
+            HTML+='
+            <div class="section-divider">🔍 Git-Only Packages — exist in Git but not found on any BTP tenant</div>'
+            RENDERED_GIT_ONLY_DIVIDER="true"
+          fi
+
+          # Use foundOnEnvironments for PKG_ENVS (which environments the package exists on)
+          PKG_ENVS="$PKG_FOUND_ENVS"
+
+          # Build data attributes for filtering
+          DATA_ATTRS="data-package=\"${PKG_ID} ${PKG_NAME}\" data-source=\"${PKG_SOURCE}\" data-git-found=\"${GIT_FOUND}\" data-has-nogit-iflows=\"${HAS_NOGIT_IFLOWS}\" data-missing-envs=\"${PKG_HAS_MISSING_ENVS}\""
+
+          # Package header with toggle
+          FORMAT_BADGE=$(format_badge "$JSON_FORMAT")
+          # Build missing-env note for package header (appended to meta line)
+          MISSING_ENV_NOTE=""
+          if [ "$PKG_HAS_MISSING_ENVS" = "true" ]; then
+            MISSING_ENV_NOTE=" · 📦 <strong>Not found on:</strong> ${PKG_MISSING_ENVS_DISPLAY}"
+          fi
+
+          if [ "$PKG_HAS_ERROR" = "true" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header error\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> 🔴 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span> · 🔴 Some IFlows have runtime ERROR status${MISSING_ENV_NOTE}</div>
+              </div>"
+          elif [ "$PKG_HAS_CONFIG_MISMATCH" = "true" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header error\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> 🔴 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span> · 🔴 Config mismatch: deployment config differs from BTP reality${MISSING_ENV_NOTE}</div>
+              </div>"
+          elif [ "$GIT_FOUND" = "false" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header not-in-git\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> ❓ 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\">❓ <strong>Not found in Git</strong> — This package exists on BTP but has no deployment configuration${MISSING_ENV_NOTE}</div>
+              </div>"
+          elif [ "$PKG_SOURCE" = "git-only" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header error\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> 🔴 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span> · 🔴 Not found on any BTP tenant</div>
+              </div>"
+          elif [ "$PKG_HAS_MISSING_ENVS" = "true" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header warning\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> ⚠️ 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span>${MISSING_ENV_NOTE}</div>
+              </div>"
+          elif [ "$PKG_HAS_DIFF" = "true" ]; then
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header warning\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> ⚠️ 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span> · ⚠️ Some IFlows have different versions across stages${MISSING_ENV_NOTE}</div>
+              </div>"
+          else
+            HTML+="
+            <div class=\"package-section collapsed\" ${DATA_ATTRS}>
+              <div class=\"package-header ok\" onclick=\"togglePackage(this)\">
+                <h2><span class=\"toggle-arrow\">▶</span> ✅ 📦 ${PKG_NAME} (<code class=\"copyable\" onclick=\"showIdMenu(event,'package','${PKG_ID}','','${PKG_ENVS}','${PKG_NAME_JS}','${GIT_FOUND}')\" title=\"Click for options\">${PKG_ID}</code>)</h2>
+                <div class=\"meta\"><span class=\"json-template-link\" onclick=\"showJsonTemplate(event)\">Deployment JSON: ${FORMAT_BADGE}</span> · ✅ All good</div>
+              </div>"
+          fi
+
+          # Package body (collapsible)
+          HTML+='
+              <div class="package-body">
+              <table>
+                <thead>
+                  <tr>
+                    <th>IFlow Name</th>
+                    <th>IFlow ID</th>'
+          for env_name in $ENV_LIST; do
+            ENV_URL=$(echo "$ENV_URLS" | jq -r --arg e "$env_name" '.[$e] // ""')
+            if [ -n "$ENV_URL" ] && [ "$ENV_URL" != "" ]; then
+              HTML+="
+                    <th><a href=\"${ENV_URL}/shell/home\" target=\"_blank\" style=\"color:var(--accent-blue);text-decoration:none;\">${env_name}</a><br><sub>Deploy · LogLevel · Runtime</sub></th>"
+            else
+              HTML+="
+                    <th>${env_name}<br><sub>Deploy · LogLevel · Runtime</sub></th>"
+            fi
+          done
+          HTML+='
+                  </tr>
+                </thead>
+                <tbody>'
+
+          # Render iflows
+          IFLOW_COUNT=$(echo "$PKG" | jq '.iflows | length')
+
+          if [ "$IFLOW_COUNT" -eq 0 ]; then
+            COLSPAN=$((2 + ENV_COUNT))
+            if [ "$GIT_FOUND" = "false" ]; then
+              HTML+="
+                  <tr><td colspan=\"${COLSPAN}\">⚠️ <em>No IFlows found — package not in Git</em></td></tr>"
+            else
+              HTML+="
+                  <tr><td colspan=\"${COLSPAN}\">ℹ️ <em>No IFlows found</em></td></tr>"
+            fi
+          fi
+
+          for iflow_idx in $(seq 0 $((IFLOW_COUNT - 1))); do
+            IFLOW=$(echo "$PKG" | jq -c ".iflows[$iflow_idx]")
+            IFLOW_ID=$(echo "$IFLOW" | jq -r '.id')
+            IFLOW_NAME=$(echo "$IFLOW" | jq -r '.name')
+            HAS_GIT=$(echo "$IFLOW" | jq -r '.hasGitConfig')
+
+            # Check if any environment has runtimeStatus ERROR
+            IFLOW_HAS_ERROR=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              [$envs[] as $e | .environments[$e].runtimeStatus] | any(. == "ERROR")
+              | if . then "true" else "false" end
+            ')
+
+            # Check for cross-stage differences in runtimeVersion only (version mismatch = warning)
+            # Only compare versions from environments where the IFlow has an active runtime (not NOT_DEPLOYED/null)
+            IFLOW_HAS_DIFF=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              def has_diff: [.[] | if . == null or . == "" then "__nil__" else . end] | unique | length > 1;
+              ([
+                $envs[] as $e |
+                .environments[$e] |
+                select(.runtimeStatus != null and .runtimeStatus != "" and .runtimeStatus != "NOT_DEPLOYED") |
+                .runtimeVersion
+              ] | has_diff)
+              | if . then "true" else "false" end
+            ')
+
+            # Check for config mismatch: deploy config vs BTP reality per environment
+            IFLOW_HAS_CONFIG_MISMATCH=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              [$envs[] as $e |
+                (.environments[$e].deploy) as $deploy |
+                (.environments[$e].runtimeStatus // "") as $status |
+                (($deploy == "true" or $deploy == true) and ($status == "NOT_DEPLOYED" or $status == "" or $status == null)) or
+                (($deploy == "false" or $deploy == false) and ($status == "STARTED"))
+              ] | any
+              | if . then "true" else "false" end
+            ')
+
+            # Compute which environments this IFlow exists on
+            IFLOW_ENVS=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              [$envs[] as $e | select(.environments[$e].runtimeStatus != null and .environments[$e].runtimeStatus != "") | $e] | join(",")
+            ')
+
+            # Compute which environments have active runtime (STARTED or ERROR, not NOT_DEPLOYED)
+            IFLOW_RUNTIME_ENVS=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              [$envs[] as $e | select(.environments[$e].runtimeStatus != null and .environments[$e].runtimeStatus != "" and .environments[$e].runtimeStatus != "NOT_DEPLOYED") | $e] | join(",")
+            ')
+
+            # Compute log levels across all environments (for filtering)
+            IFLOW_LOGLEVELS=$(echo "$IFLOW" | jq -r --argjson envs "$ENVIRONMENTS" '
+              [$envs[] as $e | .environments[$e].logLevel // empty] | unique | join(",")
+            ')
+
+            ROW_CLASS=""
+            NAME_PREFIX=""
+            if [ "$IFLOW_HAS_ERROR" = "true" ]; then
+              ROW_CLASS=" class=\"error-row\""
+              NAME_PREFIX="🔴 "
+            elif [ "$IFLOW_HAS_CONFIG_MISMATCH" = "true" ]; then
+              ROW_CLASS=" class=\"error-row\""
+              NAME_PREFIX="🔴 "
+            elif [ "$HAS_GIT" = "false" ]; then
+              ROW_CLASS=" class=\"notingit-row\""
+              NAME_PREFIX="❓ "
+            elif [ "$IFLOW_HAS_DIFF" = "true" ]; then
+              ROW_CLASS=" class=\"warning-row\""
+              NAME_PREFIX="⚠️ "
+            else
+              ROW_CLASS=" class=\"ok-row\""
+              NAME_PREFIX="✅ "
+            fi
+
+            HTML+="
+                  <tr${ROW_CLASS} data-iflow=\"${IFLOW_ID} ${IFLOW_NAME}\" data-loglevel=\"${IFLOW_LOGLEVELS}\">
+                    <td class=\"iflow-name\" title=\"${IFLOW_NAME}\">${NAME_PREFIX}${IFLOW_NAME}</td>
+                    <td class=\"iflow-id\" title=\"${IFLOW_ID}\"><code class=\"copyable\" onclick=\"showIdMenu(event,'iflow','${IFLOW_ID}','${PKG_ID}','${IFLOW_ENVS}','','','${IFLOW_RUNTIME_ENVS}')\" title=\"Click for options\">${IFLOW_ID}</code></td>"
+
+            for env_name in $ENV_LIST; do
+              # Check if this environment is in the package's missing environments list
+              ENV_IS_MISSING="false"
+              if [ "$PKG_HAS_MISSING_ENVS" = "true" ]; then
+                if echo ",$PKG_MISSING_ENVS," | grep -q ",${env_name},"; then
+                  ENV_IS_MISSING="true"
+                fi
+              fi
+
+              if [ "$ENV_IS_MISSING" = "true" ]; then
+                HTML+="
+                    <td class=\"env-not-found\" title=\"Package not found on ${env_name}\">📦 Not found</td>"
+              else
+                DEPLOY_VAL=$(echo "$IFLOW" | jq -r ".environments[\"${env_name}\"].deploy // \"null\"")
+                LOGLEVEL_VAL=$(echo "$IFLOW" | jq -r ".environments[\"${env_name}\"].logLevel // \"null\"")
+                RT_STATUS=$(echo "$IFLOW" | jq -r ".environments[\"${env_name}\"].runtimeStatus // \"null\"")
+                RT_VERSION=$(echo "$IFLOW" | jq -r ".environments[\"${env_name}\"].runtimeVersion // \"null\"")
+
+                D_BADGE=$(deploy_badge "$DEPLOY_VAL")
+                L_BADGE=$(loglevel_badge "$LOGLEVEL_VAL")
+                R_BADGE=$(runtime_badge "$RT_STATUS" "$RT_VERSION")
+
+                HTML+="
+                    <td class=\"env-cell\"><span class=\"row-item\">${D_BADGE}</span><span class=\"row-item\">${L_BADGE}</span><span class=\"row-item\">${R_BADGE}</span></td>"
+              fi
+            done
+
+            HTML+="
+                  </tr>"
+          done
+
+          HTML+='
+                </tbody>
+              </table>
+              </div>
+            </div>'
+        done
+
+        # ── Legend ──
+        HTML+='
+            <div class="legend">
+              <h2>📋 Legend</h2>
+              <table>
+                <tr><td>✅</td><td>Deployed / Enabled / Started</td></tr>
+                <tr><td>❌</td><td>Not deployed / Disabled</td></tr>
+                <tr><td>⚫</td><td>Not available on runtime</td></tr>
+                <tr><td>⚠️</td><td>No Git configuration found (BTP-only) / Different values across stages</td></tr>
+                <tr><td>🔴</td><td>Error / ERROR log level</td></tr>
+                <tr><td>🟡</td><td>Warning / Old JSON format</td></tr>
+                <tr><td>🔵</td><td>INFO log level</td></tr>
+                <tr><td>🟢</td><td>New JSON format</td></tr>
+                <tr><td>🔍</td><td>Exists in Git but not found on BTP</td></tr>
+                <tr><td>📦 Not found</td><td>Package does not exist on this environment</td></tr>
+                <tr><td>—</td><td>Not configured / Unknown</td></tr>
+              </table>
+              <p style="margin-top:8px;font-size:13px;color:#57606a;"><strong>JSON Format:</strong> 🟢 new = Enhanced format with Environments overrides | 🟡 old = Legacy format with flat Deploy flag | ⚪ none = No deployment configuration found</p>
+              <p style="margin-top:4px;font-size:13px;color:#57606a;"><strong>Scope:</strong> This dashboard considers Integration Flow (IFlow) artifacts only. Other artifact types such as Value Mappings, Script Collections, or Message Mappings are not included.</p>
+            </div>'
+
+        # ── Embed environment URLs, order, and git base URL as JS variables ──
+        ENV_ORDER_JS=$(echo "$ENVIRONMENTS" | jq -c '.')
+        GIT_BASE_URL=""
+        if [ -n "$GITHUB_SERVER_URL" ] && [ -n "$GH_REPO" ]; then
+          GIT_BASE_URL="${GITHUB_SERVER_URL}/${GH_REPO}"
+        fi
+        HTML+="
+            <script>var envUrls = $(echo "$ENV_URLS" | jq -c '.');
+            var envOrder = ${ENV_ORDER_JS};
+            var gitBaseUrl = \"${GIT_BASE_URL}\";</script>"
+
+        # ── JavaScript for filtering and expand/collapse ──
+        HTML+='
+            <script>
+              var copyToast = null;
+              var activeCardFilter = null;
+              var idMenu = null;
+
+              function copyId(text) {
+                navigator.clipboard.writeText(text).then(function() {
+                  if (!copyToast) { copyToast = document.getElementById("copyToast"); }
+                  copyToast.textContent = "\ud83d\udccb Copied: " + text;
+                  copyToast.classList.add("show");
+                  setTimeout(function() { copyToast.classList.remove("show"); }, 1500);
+                });
+                hideIdMenu();
+              }
+
+              function showIdMenu(event, type, id, packageId, foundEnvs, packageName, gitFound, runtimeEnvs) {
+                event.stopPropagation();
+                event.preventDefault();
+                if (!idMenu) { idMenu = document.getElementById("idMenu"); }
+                var found = foundEnvs ? foundEnvs.split(",").filter(function(s){return s;}) : [];
+                var html = "<button class=\"id-menu-item\" onclick=\"copyId(\x27" + id + "\x27)\">\ud83d\udccb Copy ID</button>";
+                var hasLinks = false;
+                var missing = [];
+                envOrder.forEach(function(env) {
+                  var url = envUrls[env];
+                  if (url && found.indexOf(env) !== -1) {
+                    if (!hasLinks) { html += "<div class=\"id-menu-sep\"></div>"; hasLinks = true; }
+                    var link;
+                    if (type === "package") {
+                      link = url + "/shell/design/contentpackage/" + encodeURIComponent(id);
+                    } else {
+                      link = url + "/shell/design/contentpackage/" + encodeURIComponent(packageId) + "/integrationflows/" + encodeURIComponent(id);
+                    }
+                html += "<a class=\"id-menu-item\" href=\"" + link + "\" target=\"_blank\" onclick=\"hideIdMenu()\">\ud83d\udd17 Open in " + env + "</a>";
+                  } else if (found.indexOf(env) === -1) {
+                    missing.push(env);
+                  }
+                });
+                if (type === "iflow") {
+                  var rtEnvs = runtimeEnvs ? runtimeEnvs.split(",").filter(function(s){return s;}) : [];
+                  var hasRuntimeLinks = false;
+                  envOrder.forEach(function(env) {
+                    var url = envUrls[env];
+                    if (url && rtEnvs.indexOf(env) !== -1) {
+                      if (!hasRuntimeLinks) { html += "<div class=\"id-menu-sep\"></div>"; hasRuntimeLinks = true; }
+                      var monitoringLink = url + "/shell/monitoring/Artifacts/%7B%22edge%22:%7B%22runtimeLocationId%22:%22cloudintegration%22%7D,%22artifactId%22:%22" + id + "%22%7D";
+                      html += "<a class=\"id-menu-item\" href=\"" + monitoringLink + "\" target=\"_blank\" onclick=\"hideIdMenu()\">\ud83d\udda5\ufe0f Manage in " + env + "</a>";
+                    }
+                  });
+                }
+                if (missing.length > 0 && missing.length < envOrder.length) {
+                  html += "<div class=\"id-menu-sep\"></div>";
+                  missing.forEach(function(env) {
+                    html += "<span class=\"id-menu-item\" style=\"color:#8b949e;cursor:default;\">\u26a0\ufe0f Not found on " + env + "</span>";
+                  });
+                }
+                if (type === "package" && gitBaseUrl && packageName) {
+                  var folderName = packageName.replace(/ /g, "_") + "~" + id;
+                  var gitLink = gitBaseUrl + "/tree/development/IntegrationPackages/" + folderName + "/Configuration";
+                  html += "<div class=\"id-menu-sep\"></div>";
+                  if (gitFound === "true") {
+                    html += "<a class=\"id-menu-item\" href=\"" + gitLink + "\" target=\"_blank\" onclick=\"hideIdMenu()\">\ud83d\udcc2 Open Git Config</a>";
+                  } else {
+                    html += "<span class=\"id-menu-item\" style=\"color:#8b949e;cursor:default;\">\ud83d\udcc2 Open Git Config (not in Git)</span>";
+                  }
+                }
+                idMenu.innerHTML = html;
+                // Position near click
+                var x = event.clientX;
+                var y = event.clientY;
+                idMenu.style.left = x + "px";
+                idMenu.style.top = y + "px";
+                idMenu.classList.add("show");
+                // Adjust if menu goes off screen
+                setTimeout(function() {
+                  var rect = idMenu.getBoundingClientRect();
+                  if (rect.right > window.innerWidth) { idMenu.style.left = (window.innerWidth - rect.width - 8) + "px"; }
+                  if (rect.bottom > window.innerHeight) { idMenu.style.top = (window.innerHeight - rect.height - 8) + "px"; }
+                }, 0);
+              }
+
+              function hideIdMenu() {
+                if (!idMenu) { idMenu = document.getElementById("idMenu"); }
+                idMenu.classList.remove("show");
+              }
+
+              document.addEventListener("click", function(e) {
+                if (idMenu && !idMenu.contains(e.target)) { hideIdMenu(); }
+              });
+              document.addEventListener("keydown", function(e) {
+                if (e.key === "Escape") { hideIdMenu(); hideJsonTemplate(); }
+              });
+
+              function toggleFilter(cb, otherIds) {
+                if (cb.checked) {
+                  otherIds.split(",").forEach(function(id) {
+                    document.getElementById(id.trim()).checked = false;
+                  });
+                }
+                filterDashboard();
+              }
+
+              function toggleCardFilter(filterType) {
+                document.querySelectorAll(".summary-card").forEach(function(c) { c.classList.remove("active"); });
+                if (activeCardFilter === filterType) {
+                  activeCardFilter = null;
+                } else {
+                  activeCardFilter = filterType;
+                  var card = document.querySelector(".summary-card[data-card-filter=\"" + filterType + "\"]");
+                  if (card) card.classList.add("active");
+                }
+                filterDashboard();
+              }
+
+              function togglePackage(header) {
+                const section = header.closest(".package-section");
+                section.classList.toggle("expanded");
+                section.classList.toggle("collapsed");
+              }
+
+              function expandAll() {
+                document.querySelectorAll(".package-section").forEach(pkg => {
+                  if (pkg.style.display !== "none") {
+                    pkg.classList.add("expanded");
+                    pkg.classList.remove("collapsed");
+                  }
+                });
+              }
+
+              function collapseAll() {
+                document.querySelectorAll(".package-section").forEach(pkg => {
+                  pkg.classList.remove("expanded");
+                  pkg.classList.add("collapsed");
+                });
+              }
+
+              function matchesCardFilter(pkg) {
+                if (!activeCardFilter) return true;
+                var source = pkg.getAttribute("data-source");
+                var gitFound = pkg.getAttribute("data-git-found");
+                var hasNogitIflows = pkg.getAttribute("data-has-nogit-iflows");
+                switch (activeCardFilter) {
+                  case "btp": return source === "btp";
+                  case "git-issues": return (source === "btp" && gitFound === "false") || hasNogitIflows === "true";
+                  case "git-only": return source === "git-only";
+                  case "not-all-envs": return pkg.getAttribute("data-missing-envs") === "true";
+                  default: return true;
+                }
+              }
+
+              function showJsonTemplate(event) {
+                event.stopPropagation();
+                event.preventDefault();
+                var envBlocks = [];
+                envOrder.forEach(function(env, i) {
+                  var lines = "    \"" + env + "\": {\n";
+                  lines += "      \"Deploy\": \"true\"";
+                  if (i === 0) {
+                    lines += ",\n      \"LogLevel\": \"INFO\"";
+                  } else if (i === envOrder.length - 1) {
+                    lines += ",\n      \"LogLevel\": \"ERROR\"";
+                  }
+                  lines += "\n    }";
+                  envBlocks.push(lines);
+                });
+                var jsonStr = "{\n" +
+                  "  \"ArtifactID\": \"<your-iflow-artifact-id>\",\n" +
+                  "  \"ArtifactName\": \"<Your IFlow Name>\",\n" +
+                  "  \"Deploy\": \"true\",\n" +
+                  "  \"Rank\": \"100\",\n" +
+                  "  \"LogLevel\": \"INFO\",\n" +
+                  "  \"Runtimes\": \"iflmap\",\n" +
+                  "  \"Environments\": {\n" +
+                  envBlocks.join(",\n") + "\n" +
+                  "  }\n" +
+                  "}";
+                document.getElementById("jsonTemplateCode").textContent = jsonStr;
+                window._jsonTemplateText = jsonStr;
+                document.getElementById("jsonTemplateOverlay").classList.add("show");
+              }
+
+              function copyJsonTemplate() {
+                navigator.clipboard.writeText(window._jsonTemplateText).then(function() {
+                  if (!copyToast) { copyToast = document.getElementById("copyToast"); }
+                  copyToast.textContent = "\ud83d\udccb JSON template copied!";
+                  copyToast.classList.add("show");
+                  setTimeout(function() { copyToast.classList.remove("show"); }, 1500);
+                });
+              }
+
+              function hideJsonTemplate() {
+                document.getElementById("jsonTemplateOverlay").classList.remove("show");
+              }
+
+              function filterDashboard() {
+                const query        = document.getElementById("searchInput").value.toLowerCase();
+                const notInGit     = document.getElementById("showNotInGit").checked;
+                const errorsOnly   = document.getElementById("showErrors").checked;
+                const warningsOnly = document.getElementById("showWarnings").checked;
+                const logLevelInfo = document.getElementById("showLogLevelInfo").checked;
+                const logLevelError= document.getElementById("showLogLevelError").checked;
+                document.querySelectorAll(".package-section").forEach(pkg => {
+                  const pkgText = pkg.getAttribute("data-package").toLowerCase();
+                  const cardMatch = matchesCardFilter(pkg);
+                  if (!cardMatch) { pkg.style.display = "none"; return; }
+                  let pkgVisible = false;
+                  pkg.querySelectorAll("tbody tr").forEach(row => {
+                    const iflowText  = (row.getAttribute("data-iflow") || "").toLowerCase();
+                    const isError    = row.classList.contains("error-row");
+                    const isWarning  = row.classList.contains("warning-row");
+                    const isNotInGit = row.classList.contains("notingit-row");
+                    const loglevels  = (row.getAttribute("data-loglevel") || "").split(",");
+                    const matchesQuery = !query || pkgText.includes(query) || iflowText.includes(query);
+                    const hasStatusFilter = notInGit || errorsOnly || warningsOnly;
+                    const matchesStatus = !hasStatusFilter ||
+                      (errorsOnly   && isError)    ||
+                      (warningsOnly && isWarning)  ||
+                      (notInGit     && isNotInGit);
+                    const matchesLogInfo  = !logLevelInfo  || loglevels.indexOf("INFO")  !== -1;
+                    const matchesLogError = !logLevelError || loglevels.indexOf("ERROR") !== -1;
+                    const visible = matchesQuery && matchesStatus && matchesLogInfo && matchesLogError;
+                    row.style.display = visible ? "" : "none";
+                    if (visible) pkgVisible = true;
+                  });
+                  var hasRowFilter = notInGit || errorsOnly || warningsOnly || logLevelInfo || logLevelError;
+                  if (hasRowFilter) {
+                    var headerIsError    = pkg.querySelector(".package-header.error")      !== null;
+                    var headerIsWarning  = pkg.querySelector(".package-header.warning")    !== null;
+                    var headerIsNotInGit = pkg.querySelector(".package-header.not-in-git") !== null;
+                    if      (errorsOnly   && headerIsError)    { pkg.style.display = ""; }
+                    else if (warningsOnly && headerIsWarning)  { pkg.style.display = ""; }
+                    else if (notInGit     && headerIsNotInGit) { pkg.style.display = ""; }
+                    else { pkg.style.display = pkgVisible ? "" : "none"; }
+                  } else {
+                    var matchesPkgQuery = !query || pkgText.includes(query);
+                    pkg.style.display = (pkgVisible || matchesPkgQuery) ? "" : "none";
+                  }
+                });
+                // Hide/show section dividers based on visibility of packages below them
+                document.querySelectorAll(".section-divider").forEach(function(div) {
+                  var next = div.nextElementSibling;
+                  var anyVisible = false;
+                  while (next && next.classList.contains("package-section")) {
+                    if (next.style.display !== "none") anyVisible = true;
+                    next = next.nextElementSibling;
+                  }
+                  div.style.display = anyVisible ? "" : "none";
+                });
+              }
+            </script>
+          </div>
+        </body>
+        </html>'
+
+        # Ensure output directory exists
+        mkdir -p "$(dirname "$OUTPUT_FILE")"
+
+        # Write HTML file
+        echo "$HTML" > "$OUTPUT_FILE"
+        echo "✅ HTML dashboard generated: $OUTPUT_FILE"
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+
+        # Check if content changed (for git commit decisions)
+        if git diff --quiet -- "$OUTPUT_FILE" 2>/dev/null; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi

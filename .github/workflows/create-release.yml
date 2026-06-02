@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2026-03-13 - Initial release
+# 1.0.1 - 2026-05-21 - Add explicit permissions block for GITHUB_TOKEN hardening; split GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
 #
 
 name: Create Release from Development Branch
@@ -39,11 +40,20 @@ on:
         type: string
     secrets:
       GIT_CICD_TOKEN:
-        description: "GIT Token of remote CICD Repo"
-        required: true
+        description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_GITHUB_APP_ID + GIT_GITHUB_APP_PRIVATE_KEY)"
+        required: false
       GIT_SUITE_TOKEN:
-        description: "GitHub token for the integration suite repository with contents:write and pull-requests:write permissions"
-        required: true
+        description: "GitHub token for the integration suite repository (fallback — superseded by GIT_GITHUB_APP_ID + GIT_GITHUB_APP_PRIVATE_KEY)"
+        required: false
+      GIT_CICD_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for CICD reader app (used together with GIT_CICD_APP_ID variable)"
+        required: false
+      GIT_GITHUB_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM (preferred — used together with GIT_GITHUB_APP_ID variable)"
+        required: false
+
+permissions:
+  contents: read
 
 jobs:
   create-release:
@@ -51,13 +61,60 @@ jobs:
     runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
 
     steps:
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — consumer org
+        id: app-token-suite
+        if: ${{ vars.GIT_GITHUB_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Resolve suite token
+        id: suite-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-suite.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No suite token: set GIT_GITHUB_APP_ID variable + GIT_GITHUB_APP_PRIVATE_KEY secret, or set GIT_SUITE_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Checkout cicd-actions repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
           ref: ${{ inputs.workflow-ref }}
           path: cicd-btp-insuite
-          token: ${{ secrets.GIT_CICD_TOKEN }}
+          token: ${{ steps.cicd-token.outputs.token }}
 
       # ─── Step 1: Check if release/tag already exists ───
       - name: Check if release already exists
@@ -65,7 +122,7 @@ jobs:
         uses: ./cicd-btp-insuite/.github/actions/check-release-tag-exists
         with:
           release-name: ${{ inputs.release-name }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
       # ─── Step 2: Determine workflow phase for restart handling ───
       - name: Determine workflow phase
@@ -73,8 +130,8 @@ jobs:
         if: ${{ !inputs.simulation }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
-          GH_ENTERPRISE_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
+          GH_TOKEN: ${{ steps.suite-token.outputs.token }}
+          GH_ENTERPRISE_TOKEN: ${{ steps.suite-token.outputs.token }}
         run: |
           set +e
 
@@ -132,11 +189,11 @@ jobs:
         with:
           release-name: ${{ inputs.release-name }}
           development-branch: ${{ inputs.development-branch }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
-      # ─── Step 4: Manage PR (find/create, check mergeability, squash merge) ───
+      # ─── Step 4: Manage PR (find/create, check mergeability, merge) ───
       # In simulation mode: creates PR from development → main, checks mergeability, then closes PR without merging
-      # In normal mode: creates PR from tmp/release-X → main, checks mergeability, and squash merges
+      # In normal mode: creates PR from tmp/release-X → main, checks mergeability, and merges (preserving individual commits)
       - name: Manage release PR and merge
         id: manage-pr
         if: ${{ inputs.simulation || steps.phase.outputs.phase == 'start' }}
@@ -146,29 +203,38 @@ jobs:
           source-branch: ${{ inputs.simulation && inputs.development-branch || format('tmp/release-{0}', inputs.release-name) }}
           target-branch: ${{ inputs.main-branch }}
           simulation: ${{ inputs.simulation }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          github-token: ${{ steps.suite-token.outputs.token }}
+
+      # ─── Step 5a: Guard against duplicate release on same commit ───
+      # Only runs when no-changes: branches are already in sync, verify main HEAD is not already released
+      - name: Check if main commit already has a release
+        id: check-commit-release
+        if: ${{ !inputs.simulation && steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state == 'no-changes' }}
+        uses: ./cicd-btp-insuite/.github/actions/check-commit-has-release
+        with:
+          branch-name: ${{ inputs.main-branch }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
       # ─── Step 5: Create GitHub release with tag ───
       - name: Create GitHub release
         id: create-release
-        if: ${{ !inputs.simulation && ((steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state != 'no-changes') || steps.phase.outputs.phase == 'cleanup' || steps.phase.outputs.phase == 'recreate-dev') }}
+        if: ${{ !inputs.simulation && ((steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state == 'merged') || (steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state == 'no-changes' && steps.check-commit-release.outputs.has-release != 'true') || steps.phase.outputs.phase == 'cleanup' || steps.phase.outputs.phase == 'recreate-dev') }}
         uses: ./cicd-btp-insuite/.github/actions/create-github-release
         with:
           release-name: ${{ inputs.release-name }}
           target-branch: ${{ inputs.main-branch }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
       # ─── Step 6: Recreate development branch ───
-      # When pr-state is 'no-changes', recreate development from the temp branch (effectively renaming it back)
-      # Otherwise, recreate development from main (fresh start after merge)
+      # Recreate development branch from main — whether the PR was merged or branches were already in sync
       - name: Recreate development branch
         id: recreate-dev
         if: ${{ !inputs.simulation && (steps.phase.outputs.phase == 'start' || steps.phase.outputs.phase == 'cleanup' || steps.phase.outputs.phase == 'recreate-dev') }}
         uses: ./cicd-btp-insuite/.github/actions/recreate-branch
         with:
           branch-name: ${{ inputs.development-branch }}
-          source-ref: ${{ (steps.phase.outputs.phase == 'start' && steps.manage-pr.outputs.pr-state == 'no-changes') && format('tmp/release-{0}', inputs.release-name) || inputs.main-branch }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          source-ref: ${{ inputs.main-branch }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
       # ─── Step 7: Delete temporary branch ───
       - name: Delete temporary release branch
@@ -177,7 +243,7 @@ jobs:
         uses: ./cicd-btp-insuite/.github/actions/delete-branch
         with:
           branch-name: tmp/release-${{ inputs.release-name }}
-          github-token: ${{ secrets.GIT_SUITE_TOKEN }}
+          github-token: ${{ steps.suite-token.outputs.token }}
 
       # ─── Summary ───
       - name: Release summary

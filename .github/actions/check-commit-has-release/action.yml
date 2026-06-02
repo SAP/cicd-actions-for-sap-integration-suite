@@ -1,0 +1,104 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-05-08 - Initial release
+#
+
+name: 'Check Commit Has Release'
+description: 'Checks if the HEAD commit of a branch already has any GitHub release pointing to it'
+inputs:
+  branch-name:
+    description: 'Branch whose HEAD commit to check'
+    required: true
+  github-token:
+    description: 'GitHub token with contents:read permission'
+    required: true
+outputs:
+  has-release:
+    description: 'Whether any GitHub release already points to this commit (true/false)'
+    value: ${{ steps.check.outputs.has-release }}
+  release-name:
+    description: 'Name of the existing release if found, otherwise empty'
+    value: ${{ steps.check.outputs.release-name }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if commit already has a release
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set +e
+
+        BRANCH_NAME="${{ inputs.branch-name }}"
+
+        GITHUB_URL="${{ github.server_url }}"
+        GH_HOSTNAME=$(echo "$GITHUB_URL" | sed -e 's|^https://||' -e 's|^http://||' -e 's|/$||')
+
+        echo "════════════════════════════════════════════════════════"
+        echo "🔍 CHECK COMMIT HAS RELEASE"
+        echo "════════════════════════════════════════════════════════"
+        echo "📋 Branch: $BRANCH_NAME"
+        echo "📦 Repository: ${{ github.repository }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # Resolve branch HEAD to commit SHA
+        branch_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/commits/$BRANCH_NAME" 2>&1)
+        if [ $? -ne 0 ]; then
+          echo "❌ Failed to resolve branch '$BRANCH_NAME' to a commit SHA"
+          echo "   Response: $branch_response"
+          echo "has-release=false" >> $GITHUB_OUTPUT
+          echo "release-name=" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        COMMIT_SHA=$(echo "$branch_response" | jq -r '.sha')
+        echo "📌 HEAD commit SHA: $COMMIT_SHA"
+        echo ""
+
+        # List all repo tags — GitHub automatically dereferences annotated tags to commit SHA
+        tags_response=$(gh api --hostname "$GH_HOSTNAME" \
+          -H "Accept: application/vnd.github+json" \
+          "/repos/${{ github.repository }}/tags" --paginate 2>&1)
+        if [ $? -ne 0 ]; then
+          echo "⚠️  Could not list tags — assuming no release on commit"
+          echo "has-release=false" >> $GITHUB_OUTPUT
+          echo "release-name=" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Find tags pointing to this commit
+        matching_tags=$(echo "$tags_response" | jq -r --arg sha "$COMMIT_SHA" \
+          '.[] | select(.commit.sha == $sha) | .name')
+
+        if [ -z "$matching_tags" ]; then
+          echo "✅ No tags point to commit $COMMIT_SHA — no release exists for this commit"
+          echo "has-release=false" >> $GITHUB_OUTPUT
+          echo "release-name=" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        echo "🏷️  Tags on this commit: $(echo "$matching_tags" | tr '\n' ' ')"
+        echo ""
+
+        # Check whether any of those tags has a GitHub release
+        while IFS= read -r tag; do
+          release_response=$(gh api --hostname "$GH_HOSTNAME" \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/releases/tags/$tag" 2>&1)
+          if [ $? -eq 0 ] && echo "$release_response" | jq -e '.id' > /dev/null 2>&1; then
+            echo "⚠️  Release '$tag' already exists for commit $COMMIT_SHA"
+            echo "has-release=true" >> $GITHUB_OUTPUT
+            echo "release-name=$tag" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        done <<< "$matching_tags"
+
+        echo "✅ Tags found but no GitHub release — safe to create a new release for this commit"
+        echo "has-release=false" >> $GITHUB_OUTPUT
+        echo "release-name=" >> $GITHUB_OUTPUT

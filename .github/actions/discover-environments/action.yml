@@ -1,0 +1,126 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-10 - Initial release
+# 1.1.0 - 2026-05-27 - Fully dynamic: return all non-github-pages environments sorted alphabetically; remove known-stages (O.Weng)
+# 1.4.0 - 2026-05-28 - Filter by required variables; only environments with all required vars defined are returned (O.Weng)
+#
+name: Discover GitHub Environments
+description: |
+  Discovers all GitHub environments configured on the repository,
+  excluding the reserved github-pages environment.
+  Optionally filters to only environments that have all required
+  variable names defined. Results are sorted alphabetically.
+
+inputs:
+  github-token:
+    description: "GitHub token with permissions to read environments and environment variables"
+    required: true
+  github-api-url:
+    description: "GitHub API base URL"
+    required: true
+  github-repository:
+    description: "GitHub repository (owner/repo)"
+    required: true
+  required-variables:
+    description: 'JSON array of variable names that must exist on an environment for it to be included (default: ["BTP_API_URL","BTP_API_USER","BTP_TOKEN_URL"]). Set to "[]" to skip validation.'
+    required: false
+    default: '["BTP_API_URL","BTP_API_USER","BTP_TOKEN_URL"]'
+
+outputs:
+  environments:
+    description: "JSON array of discovered environment names (alphabetically sorted, github-pages excluded, required variables present)"
+    value: ${{ steps.discover.outputs.environments }}
+  count:
+    description: "Number of discovered environments"
+    value: ${{ steps.discover.outputs.count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Discover configured environments
+      id: discover
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_API_URL: ${{ inputs.github-api-url }}
+        GH_REPO: ${{ inputs.github-repository }}
+        REQUIRED_VARS: ${{ inputs.required-variables }}
+      run: |
+        echo "🔍 Discovering GitHub environments for $GH_REPO..."
+        echo "   API URL          : $GH_API_URL"
+        echo "   Required vars    : $REQUIRED_VARS"
+        echo "   Token            : ${GH_TOKEN:0:8}... (length: ${#GH_TOKEN})"
+
+        api_get() {
+          curl -s -w "\n%{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GH_API_URL/$1"
+        }
+
+        # ── List all environments ──
+        RESPONSE=$(api_get "repos/$GH_REPO/environments")
+        HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "❌ Failed to list environments (HTTP $HTTP_STATUS)"
+          echo "$BODY"
+          curl -v \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GH_API_URL/repos/$GH_REPO/environments" 2>&1 | grep -E "^[<>*]" | head -40 || true
+          exit 1
+        fi
+
+        # Extract all env names except github-pages, sorted
+        ALL_ENVS=$(echo "$BODY" | jq -r '[.environments[].name | select(. != "github-pages")] | sort | .[]')
+
+        # ── Filter by required variables ──
+        REQ_COUNT=$(echo "$REQUIRED_VARS" | jq 'length')
+        QUALIFIED=()
+
+        while IFS= read -r env_name; do
+          [[ -z "$env_name" ]] && continue
+
+          if [[ "$REQ_COUNT" -eq 0 ]]; then
+            QUALIFIED+=("$env_name")
+            continue
+          fi
+
+          # Fetch variable names for this environment
+          VAR_RESPONSE=$(api_get "repos/$GH_REPO/environments/${env_name}/variables?per_page=100")
+          VAR_STATUS=$(echo "$VAR_RESPONSE" | tail -n1)
+          VAR_BODY=$(echo "$VAR_RESPONSE" | sed '$d')
+
+          if [[ "$VAR_STATUS" != "200" ]]; then
+            echo "   ⚠️  Could not read variables for '$env_name' (HTTP $VAR_STATUS) — skipping"
+            continue
+          fi
+
+          DEFINED_VARS=$(echo "$VAR_BODY" | jq -r '[.variables[].name]')
+
+          # Check all required vars are present
+          MISSING=$(echo "$DEFINED_VARS" | jq -r --argjson req "$REQUIRED_VARS" \
+            '$req - . | .[]' 2>/dev/null || true)
+
+          if [[ -z "$MISSING" ]]; then
+            QUALIFIED+=("$env_name")
+            echo "   ✅ $env_name — all required variables present"
+          else
+            echo "   ⛔ $env_name — missing: $(echo "$MISSING" | tr '\n' ' ')"
+          fi
+        done <<< "$ALL_ENVS"
+
+        # Build output JSON array (already alphabetically ordered from sort above)
+        ENVS=$(printf '%s\n' "${QUALIFIED[@]}" | jq -R . | jq -sc .)
+        ENV_COUNT=$(echo "$ENVS" | jq 'length')
+
+        echo ""
+        echo "✅ Discovered $ENV_COUNT qualified environments: $ENVS"
+        echo "environments=$ENVS" >> "$GITHUB_OUTPUT"
+        echo "count=$ENV_COUNT" >> "$GITHUB_OUTPUT"

@@ -3,10 +3,12 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
+# 1.1.0 - 2026-02-27 - Add eic-runtimes parameter for Edge Integration Cell support (O. Weng)
+# 1.2.0 - 2026-05-05 - Add eic-url-template parameter; EIC URL path not yet published — subject to change
 #
 
 name: Create Partner ID in BTP
-description: Create Partner ID in BTP
+description: Create Partner ID in BTP (Cloud Integration and optionally Edge Integration Cells)
 
 inputs:
   target-env:
@@ -36,6 +38,13 @@ inputs:
   BTP_TEC_PASSWORD:
     description: "BTP Technical User Password"
     required: true
+  eic-runtimes:
+    description: "Comma-separated list of Edge Integration Cell runtime identifiers (optional). If provided, Partner Directory entries will also be synced to these EIC runtimes."
+    required: false
+    default: ""
+  eic-url-template:
+    description: "URL path template for EIC API access. Contains {runtime} as placeholder for the runtime identifier. NOTE: Not published. Pre-work to support EIC — do not use productively. Subject to change."
+    required: false
 
 runs:
   using: "composite"
@@ -400,10 +409,151 @@ runs:
         parameter-json: ${{ steps.prepare-binary-parameters.outputs.json_file }}
         type: BinaryParameters
 
+    # Sync to Edge Integration Cell runtimes (if configured)
+    - name: Sync to Edge Integration Cell Runtimes
+      id: sync-to-eic
+      if: ${{ inputs.eic-runtimes != '' }}
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ steps.get-token.outputs.token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        EIC_RUNTIMES: ${{ inputs.eic-runtimes }}
+        EIC_URL_TEMPLATE: ${{ inputs.eic-url-template }}
+        PARTNERID: ${{ inputs.partner-id }}
+      run: |
+        set -euo pipefail
+        
+        echo "========================================"
+        echo "🔄 Syncing Partner Directory to Edge Integration Cells"
+        echo "========================================"
+        echo "Partner ID: $PARTNERID"
+        echo "EIC Runtimes: $EIC_RUNTIMES"
+        echo "----------------------------------------"
+        
+        # Parse comma-separated EIC runtimes
+        IFS=',' read -ra EIC_ARRAY <<< "$EIC_RUNTIMES"
+        
+        EIC_SUCCESS_COUNT=0
+        EIC_FAILURE_COUNT=0
+        
+        for eic_runtime in "${EIC_ARRAY[@]}"; do
+          # Trim whitespace
+          eic_runtime=$(echo "$eic_runtime" | xargs)
+          
+          if [[ -z "$eic_runtime" ]]; then
+            continue
+          fi
+          
+          echo ""
+          echo "📍 Syncing to EIC: $eic_runtime"
+          echo "-----------------------------------------"
+          
+          if [[ -z "$EIC_URL_TEMPLATE" ]]; then
+            echo "❌ eic-url-template is required when eic-runtimes is set. Configure BTP_EIC_URL_TEMPLATE (URL path not yet published, subject to change)."
+            exit 1
+          fi
+          EIC_PATH="${EIC_URL_TEMPLATE//\{runtime\}/$eic_runtime}"
+          EIC_ENDPOINT="$BTP_API_URL$EIC_PATH"
+          EIC_ERRORS=0
+          
+          # Sync each Partner Directory type
+          for type in "AlternativePartners" "StringParameters" "AuthorizedUsers" "BinaryParameters"; do
+            case "$type" in
+              "AlternativePartners")
+                JSON_FILE="/tmp/alternative-partners.json"
+                ;;
+              "StringParameters")
+                JSON_FILE="/tmp/string-parameters.json"
+                ;;
+              "AuthorizedUsers")
+                JSON_FILE="/tmp/authorized-users.json"
+                ;;
+              "BinaryParameters")
+                JSON_FILE="/tmp/binary-parameters.json"
+                ;;
+            esac
+            
+            if [[ ! -f "$JSON_FILE" ]]; then
+              echo "   ⚠️ $type: JSON file not found, skipping"
+              continue
+            fi
+            
+            ENTRY_COUNT=$(jq '. | length' "$JSON_FILE" 2>/dev/null || echo "0")
+            
+            if [[ "$ENTRY_COUNT" == "0" ]]; then
+              echo "   ⏭️ $type: No entries to sync"
+              continue
+            fi
+            
+            echo "   📤 $type: Syncing $ENTRY_COUNT entries..."
+            
+            # Process each entry
+            SUCCESS=0
+            FAILED=0
+            
+            for ((i=0; i<$ENTRY_COUNT; i++)); do
+              ENTRY=$(jq -c ".[$i]" "$JSON_FILE")
+              
+              RESPONSE=$(mktemp)
+              HTTP_STATUS=$(curl -s -w "%{http_code}" -X POST "$EIC_ENDPOINT/$type" \
+                -H "Authorization: $BEARER_TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                -d "$ENTRY" \
+                -o "$RESPONSE") || {
+                echo "      ❌ Network error for entry $((i+1))"
+                FAILED=$((FAILED + 1))
+                rm -f "$RESPONSE"
+                continue
+              }
+              
+              rm -f "$RESPONSE"
+              
+              if [[ "$HTTP_STATUS" == "201" ]] || [[ "$HTTP_STATUS" == "200" ]]; then
+                SUCCESS=$((SUCCESS + 1))
+              else
+                FAILED=$((FAILED + 1))
+              fi
+            done
+            
+            if [[ $FAILED -eq 0 ]]; then
+              echo "      ✅ $type: $SUCCESS/$ENTRY_COUNT entries synced"
+            else
+              echo "      ⚠️ $type: $SUCCESS succeeded, $FAILED failed"
+              EIC_ERRORS=$((EIC_ERRORS + FAILED))
+            fi
+          done
+          
+          if [[ $EIC_ERRORS -eq 0 ]]; then
+            echo "   ✅ EIC $eic_runtime: Sync completed successfully"
+            EIC_SUCCESS_COUNT=$((EIC_SUCCESS_COUNT + 1))
+          else
+            echo "   ⚠️ EIC $eic_runtime: Sync completed with $EIC_ERRORS errors"
+            EIC_FAILURE_COUNT=$((EIC_FAILURE_COUNT + 1))
+          fi
+        done
+        
+        echo ""
+        echo "========================================"
+        echo "📊 EIC Sync Summary"
+        echo "========================================"
+        echo "✅ Successful EICs: $EIC_SUCCESS_COUNT"
+        echo "⚠️ EICs with errors: $EIC_FAILURE_COUNT"
+        echo "========================================"
+        
+        # Don't fail the whole workflow if some EIC syncs had issues
+        # The Cloud Integration sync was successful
+        if [[ $EIC_SUCCESS_COUNT -eq 0 ]] && [[ ${#EIC_ARRAY[@]} -gt 0 ]]; then
+          echo "❌ All EIC syncs failed"
+          exit 1
+        fi
+
     # Summary
     - name: Partner Directory Creation Summary
       if: always()
       shell: bash
+      env:
+        EIC_RUNTIMES: ${{ inputs.eic-runtimes }}
       run: |
         echo "========================================"
         echo "📊 Partner Directory Creation Summary"
@@ -411,30 +561,42 @@ runs:
         echo "Partner ID: ${{ inputs.partner-id }}"
         echo "Environment: ${{ inputs.target-env }}"
         echo "----------------------------------------"
+        echo "📍 Cloud Integration:"
         
         if [[ "${{ steps.create-pid-alternative-partners.outcome }}" == "success" ]]; then
-          echo "✅ Alternative Partners: Created"
+          echo "   ✅ Alternative Partners: Created"
         else
-          echo "❌ Alternative Partners: Failed"
+          echo "   ❌ Alternative Partners: Failed"
         fi
         
         if [[ "${{ steps.create-pid-string-parameters.outcome }}" == "success" ]]; then
-          echo "✅ String Parameters: Created"
+          echo "   ✅ String Parameters: Created"
         else
-          echo "❌ String Parameters: Failed"
+          echo "   ❌ String Parameters: Failed"
         fi
         
         if [[ "${{ steps.create-pid-authorized-users.outcome }}" == "success" ]]; then
-          echo "✅ Authorized Users: Created"
+          echo "   ✅ Authorized Users: Created"
         else
-          echo "❌ Authorized Users: Failed"
+          echo "   ❌ Authorized Users: Failed"
         fi
         
         if [[ "${{ steps.create-pid-binary-parameters.outcome }}" == "success" ]]; then
-          echo "✅ Binary Parameters: Created"
+          echo "   ✅ Binary Parameters: Created"
         else
-          echo "❌ Binary Parameters: Failed"
+          echo "   ❌ Binary Parameters: Failed"
         fi
         
-
+        if [[ -n "$EIC_RUNTIMES" ]]; then
+          echo "----------------------------------------"
+          echo "📍 Edge Integration Cells: $EIC_RUNTIMES"
+          if [[ "${{ steps.sync-to-eic.outcome }}" == "success" ]]; then
+            echo "   ✅ EIC Sync: Completed"
+          elif [[ "${{ steps.sync-to-eic.outcome }}" == "skipped" ]]; then
+            echo "   ⏭️ EIC Sync: Skipped (no runtimes configured)"
+          else
+            echo "   ⚠️ EIC Sync: Completed with errors"
+          fi
+        fi
+        
         echo "========================================"

@@ -1,0 +1,303 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-05-06 - Initial release
+# 1.0.1 - 2026-05-20 - Fix ARG_MAX: write combined packages to file; use --slurpfile instead of --argjson (O.Weng)
+#
+name: Scan IFlow Roles
+description: |
+  Scans integration flow (.iflw) files in the Git repository and extracts
+  the configured userRole property for each IFlow. The IFlow list is driven
+  by the BTP API (DEV environment). For each IFlow the action:
+    1. Fetches the iflow list from BTP for the given package
+    2. Locates the matching .iflw file in the Git packages-dir
+    3. Extracts the userRole XML property (via perl, handles multi-line XML)
+    4. If the value is an externalized parameter {{paramName}}, resolves it
+       from ConfigParams_INTEGRATION_FLOW.json (DEV value first, then Default)
+  Missing userRole is not an error — not every IFlow uses role-based auth.
+
+inputs:
+  bearer-token:
+    description: "OAuth Bearer token for BTP API calls"
+    required: true
+  btp-api-url:
+    description: "BTP API base URL (e.g. https://tenant.it-cpi018.cfapps.eu20.hana.ondemand.com)"
+    required: true
+  packages:
+    description: "JSON array of packages [{Id, Name}] from get-packages-by-regex"
+    required: true
+  environment:
+    description: "Environment name used for ConfigParams resolution (e.g. DEV)"
+    required: true
+  packages-dir:
+    description: "Absolute path to the IntegrationPackages directory in the Git checkout"
+    required: true
+  btp-is-url:
+    description: "BTP Integration Suite UI URL for DEV (e.g. https://tenant.integrationsuite.cfapps.eu20.hana.ondemand.com) — embedded in the output JSON and used by generate-roles-page to build direct links"
+    required: false
+    default: ""
+  output-file:
+    description: "Path to write the roles-data.json output file"
+    required: true
+
+outputs:
+  file:
+    description: "Path to the generated roles-data.json file"
+    value: ${{ steps.scan.outputs.file }}
+  iflow-count:
+    description: "Total number of IFlows processed"
+    value: ${{ steps.scan.outputs.iflow-count }}
+  roles-found:
+    description: "Number of IFlows with a resolved userRole"
+    value: ${{ steps.scan.outputs.roles-found }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Scan IFlow roles
+      id: scan
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGES: ${{ inputs.packages }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        PACKAGES_DIR: ${{ inputs.packages-dir }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+        BTP_IS_URL: ${{ inputs.btp-is-url }}
+      run: |
+        echo "🔑 Scanning IFlow roles..."
+        echo "   Environment: $ENVIRONMENT"
+        echo "   Packages dir: $PACKAGES_DIR"
+
+        GENERATED=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        PACKAGE_COUNT=$(echo "$PACKAGES" | jq 'length')
+        echo "   Packages to scan: $PACKAGE_COUNT"
+
+        TMP_DIR=$(mktemp -d)
+        TOTAL_IFLOWS=0
+        TOTAL_ROLES=0
+        TOTAL_NONE=0
+        TOTAL_NOT_IN_GIT=0
+        TOTAL_UNRESOLVED=0
+
+        for pkg_idx in $(seq 0 $((PACKAGE_COUNT - 1))); do
+          PKG_ID=$(echo "$PACKAGES" | jq -r ".[$pkg_idx].Id")
+          PKG_NAME=$(echo "$PACKAGES" | jq -r ".[$pkg_idx].Name")
+          echo "  📦 Package: $PKG_NAME ($PKG_ID)"
+
+          # Locate the package directory by ID (robust: ignores name differences)
+          PKG_DIR=$(find "$PACKAGES_DIR" -maxdepth 1 -type d -name "*~${PKG_ID}" 2>/dev/null | head -1)
+          if [ -z "$PKG_DIR" ]; then
+            echo "    ⚠️  Package directory not found in Git for ID $PKG_ID — skipping"
+            # Still fetch iflows from BTP and mark them all as not-in-git
+          fi
+
+          # Fetch iflow list from BTP
+          iflow_response=$(curl -s -w "\n%{http_code}" -X GET \
+            "$BTP_API_URL/api/v1/IntegrationPackages('$PKG_ID')/IntegrationDesigntimeArtifacts?\$format=json" \
+            -H "Authorization: $BEARER_TOKEN")
+          IFLOW_HTTP=$(echo "$iflow_response" | tail -n1)
+          IFLOW_BODY=$(echo "$iflow_response" | sed '$d')
+
+          if [ "$IFLOW_HTTP" = "404" ]; then
+            echo "    ⚠️  Package $PKG_ID not found on BTP (404) — skipping"
+            echo "[]" > "${TMP_DIR}/iflows_${pkg_idx}.json"
+            continue
+          elif [ "$IFLOW_HTTP" != "200" ]; then
+            echo "    ❌ Failed to fetch IFlows for $PKG_ID (HTTP $IFLOW_HTTP)"
+            echo "    $IFLOW_BODY"
+            exit 1
+          fi
+
+          IFLOWS=$(echo "$IFLOW_BODY" | jq -c '[.d.results[] | {id: .Id, name: .Name}]')
+          IFLOW_COUNT=$(echo "$IFLOWS" | jq 'length')
+          echo "    IFlows: $IFLOW_COUNT"
+
+          # Load ConfigParams for externalized parameter resolution (may not exist)
+          CONFIG_FILE=""
+          if [ -n "$PKG_DIR" ]; then
+            CONFIG_CANDIDATE="${PKG_DIR}/Configuration/ConfigParams_INTEGRATION_FLOW.json"
+            [ -f "$CONFIG_CANDIDATE" ] && CONFIG_FILE="$CONFIG_CANDIDATE"
+          fi
+
+          # Cache all MANIFEST.MF paths for this package once — used to locate .iflw files
+          # by Bundle-SymbolicName (IFlow ID) rather than filename, since filenames can differ
+          PKG_MANIFESTS=""
+          if [ -n "$PKG_DIR" ]; then
+            PKG_MANIFESTS=$(find "$PKG_DIR" -name "MANIFEST.MF" 2>/dev/null)
+          fi
+
+          # Build iflow entries for this package
+          IFLOW_ENTRIES="[]"
+
+          for iflow_idx in $(seq 0 $((IFLOW_COUNT - 1))); do
+            IFLOW_ID=$(echo "$IFLOWS" | jq -r ".[$iflow_idx].id")
+            IFLOW_NAME=$(echo "$IFLOWS" | jq -r ".[$iflow_idx].name")
+            TOTAL_IFLOWS=$((TOTAL_IFLOWS + 1))
+
+            # If package not in Git, mark all iflows as not-in-git
+            if [ -z "$PKG_DIR" ]; then
+              ENTRY=$(jq -n \
+                --arg id "$IFLOW_ID" \
+                --arg name "$IFLOW_NAME" \
+                '{"id": $id, "name": $name, "userRole": "", "roleStatus": "not-in-git", "roleSource": "none"}')
+              IFLOW_ENTRIES=$(echo "$IFLOW_ENTRIES" | jq --argjson e "$ENTRY" '. + [$e]')
+              TOTAL_NOT_IN_GIT=$((TOTAL_NOT_IN_GIT + 1))
+              continue
+            fi
+
+            # Locate the iflow folder via MANIFEST.MF: match Bundle-SymbolicName (ID) first,
+            # fall back to Bundle-Name. The .iflw filename does not reliably match the ID/Name.
+            IFLOW_FILE=""
+            IFLOW_MANIFEST=$(echo "$PKG_MANIFESTS" | xargs -r grep -lF "Bundle-SymbolicName: ${IFLOW_ID}" 2>/dev/null | head -1 || true)
+            if [ -z "$IFLOW_MANIFEST" ]; then
+              IFLOW_MANIFEST=$(echo "$PKG_MANIFESTS" | xargs -r grep -lF "Bundle-Name: ${IFLOW_NAME}" 2>/dev/null | head -1 || true)
+            fi
+            if [ -n "$IFLOW_MANIFEST" ]; then
+              IFLOW_DIR=$(dirname "$(dirname "$IFLOW_MANIFEST")")
+              IFLOW_FILE=$(find "$IFLOW_DIR" -name "*.iflw" 2>/dev/null | head -1)
+            fi
+
+            if [ -z "$IFLOW_FILE" ]; then
+              echo "    ❓ IFlow not in Git: $IFLOW_NAME ($IFLOW_ID)"
+              ENTRY=$(jq -n \
+                --arg id "$IFLOW_ID" \
+                --arg name "$IFLOW_NAME" \
+                '{"id": $id, "name": $name, "userRole": "", "roleStatus": "not-in-git", "roleSource": "none"}')
+              IFLOW_ENTRIES=$(echo "$IFLOW_ENTRIES" | jq --argjson e "$ENTRY" '. + [$e]')
+              TOTAL_NOT_IN_GIT=$((TOTAL_NOT_IN_GIT + 1))
+              continue
+            fi
+
+            # Extract userRole from .iflw XML using perl (slurp mode, multi-line safe)
+            RAW_ROLE=$(perl -0777 -ne \
+              'if (/userRole<\/key>\s*<value>(.*?)<\/value>/s) { print $1 }' \
+              "$IFLOW_FILE" 2>/dev/null)
+
+            if [ -z "$RAW_ROLE" ]; then
+              # No userRole configured — not an error
+              ENTRY=$(jq -n \
+                --arg id "$IFLOW_ID" \
+                --arg name "$IFLOW_NAME" \
+                '{"id": $id, "name": $name, "userRole": "", "roleStatus": "none", "roleSource": "direct"}')
+              IFLOW_ENTRIES=$(echo "$IFLOW_ENTRIES" | jq --argjson e "$ENTRY" '. + [$e]')
+              TOTAL_NONE=$((TOTAL_NONE + 1))
+              continue
+            fi
+
+            # Check if externalized: {{paramName}}
+            PARAM_NAME=$(echo "$RAW_ROLE" | perl -ne 'print $1 if /^\{\{(.+)\}\}$/')
+
+            if [ -n "$PARAM_NAME" ]; then
+              # Externalized parameter — resolve from ConfigParams
+              RESOLVED=""
+              if [ -n "$CONFIG_FILE" ]; then
+                RESOLVED=$(jq -r \
+                  --arg aid "$IFLOW_ID" \
+                  --arg pkey "$PARAM_NAME" \
+                  --arg env "$ENVIRONMENT" \
+                  '.PackageIntegrationFlowParameters.Artifacts[]?
+                   | select(.ArtifactID == $aid)
+                   | .Parameters[]?
+                   | select(.ParameterKey == $pkey)
+                   | .ParameterValues[$env] // .ParameterValues.Default // ""' \
+                  "$CONFIG_FILE" 2>/dev/null | head -1)
+              fi
+
+              if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "null" ]; then
+                echo "    ✅ $IFLOW_NAME → {{$PARAM_NAME}} = $RESOLVED"
+                ENTRY=$(jq -n \
+                  --arg id "$IFLOW_ID" \
+                  --arg name "$IFLOW_NAME" \
+                  --arg role "$RESOLVED" \
+                  '{"id": $id, "name": $name, "userRole": $role, "roleStatus": "defined", "roleSource": "param-resolved"}')
+                TOTAL_ROLES=$((TOTAL_ROLES + 1))
+              else
+                echo "    🔴 $IFLOW_NAME → {{$PARAM_NAME}} — param not found in ConfigParams"
+                ENTRY=$(jq -n \
+                  --arg id "$IFLOW_ID" \
+                  --arg name "$IFLOW_NAME" \
+                  --arg role "$RAW_ROLE" \
+                  '{"id": $id, "name": $name, "userRole": $role, "roleStatus": "error", "roleSource": "param-unresolved"}')
+                TOTAL_UNRESOLVED=$((TOTAL_UNRESOLVED + 1))
+              fi
+            else
+              # Direct string value
+              echo "    ✅ $IFLOW_NAME → $RAW_ROLE"
+              ENTRY=$(jq -n \
+                --arg id "$IFLOW_ID" \
+                --arg name "$IFLOW_NAME" \
+                --arg role "$RAW_ROLE" \
+                '{"id": $id, "name": $name, "userRole": $role, "roleStatus": "defined", "roleSource": "direct"}')
+              TOTAL_ROLES=$((TOTAL_ROLES + 1))
+            fi
+
+            IFLOW_ENTRIES=$(echo "$IFLOW_ENTRIES" | jq --argjson e "$ENTRY" '. + [$e]')
+          done
+
+          # Write package entry to temp file
+          jq -n \
+            --arg id "$PKG_ID" \
+            --arg name "$PKG_NAME" \
+            --argjson iflows "$IFLOW_ENTRIES" \
+            '{"id": $id, "name": $name, "iflows": $iflows}' \
+            > "${TMP_DIR}/pkg_${pkg_idx}.json"
+        done
+
+        # Combine all package files into final output — use file-based merge to
+        # avoid ARG_MAX when passing large JSON as a shell argument to jq.
+        echo "📝 Assembling roles-data.json..."
+        COMBINED="${TMP_DIR}/all_packages.json"
+        {
+          printf '['
+          sep=""
+          while IFS= read -r f; do
+            printf '%s' "$sep"
+            cat "$f"
+            sep=","
+          done < <(find "$TMP_DIR" -name "pkg_*.json" | sort)
+          printf ']'
+        } > "$COMBINED"
+        IFLOWS_WITHOUT_ROLE=$((TOTAL_IFLOWS - TOTAL_ROLES - TOTAL_NOT_IN_GIT - TOTAL_UNRESOLVED))
+
+        mkdir -p "$(dirname "$OUTPUT_FILE")"
+        jq -n \
+          --arg generated "$GENERATED" \
+          --arg devenv "$ENVIRONMENT" \
+          --arg devUrl "${BTP_IS_URL}" \
+          --slurpfile packages "$COMBINED" \
+          --argjson totalPkgs "$PACKAGE_COUNT" \
+          --argjson totalIflows "$TOTAL_IFLOWS" \
+          --argjson withRole "$TOTAL_ROLES" \
+          --argjson withoutRole "$IFLOWS_WITHOUT_ROLE" \
+          --argjson notInGit "$TOTAL_NOT_IN_GIT" \
+          --argjson unresolved "$TOTAL_UNRESOLVED" \
+          '{
+            "generated": $generated,
+            "devEnvironment": $devenv,
+            "devUrl": $devUrl,
+            "packages": $packages[0],
+            "summary": {
+              "totalPackages": $totalPkgs,
+              "totalIflows": $totalIflows,
+              "iflowsWithRole": $withRole,
+              "iflowsWithoutRole": $withoutRole,
+              "iflowsNotInGit": $notInGit,
+              "iflowsParamUnresolved": $unresolved
+            }
+          }' > "$OUTPUT_FILE"
+
+        echo "✅ Roles data written to $OUTPUT_FILE"
+        echo "   Total IFlows: $TOTAL_IFLOWS"
+        echo "   With role:    $TOTAL_ROLES"
+        echo "   No role:      $IFLOWS_WITHOUT_ROLE"
+        echo "   Not in Git:   $TOTAL_NOT_IN_GIT"
+        echo "   Unresolved:   $TOTAL_UNRESOLVED"
+
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+        echo "iflow-count=$TOTAL_IFLOWS" >> "$GITHUB_OUTPUT"
+        echo "roles-found=$TOTAL_ROLES" >> "$GITHUB_OUTPUT"
+
+        rm -rf "$TMP_DIR"

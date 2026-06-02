@@ -2,7 +2,7 @@
 
 When you use Access Policies to protect your artifacts from unwanted access, you need to provide a technical user for CICD Actions. Due to activated Access Policies, the CI/CD workflows require a dedicated technical user to be able to access the protected objects.
 
-> **Note:** Repeat these steps for every tenant in your landscape (DEV, TST, PRD).
+> **Note:** Repeat these steps for every tenant in your landscape. **DEV** and **TST** are required; additional environments (e.g. PRD) are optional.
 
 ---
 
@@ -25,10 +25,12 @@ Create a dedicated technical user in your Identity Management System connected t
 3. Ensure **basic authentication** is activated for this user
 4. Set a secure password and store it safely
 
-> ⚠️ **Important:** A dedicated technical user must be created for **every tenant** (DEV, TST, PRD) in your landscape. Use a consistent naming convention, for example:
+> ⚠️ **Important:** A dedicated technical user must be created for **every tenant** in your landscape. Use a consistent naming convention, for example:
 > - DEV: `cicd-technical-user-dev@yourdomain.com`
 > - TST: `cicd-technical-user-tst@yourdomain.com`
 > - PRD: `cicd-technical-user-prd@yourdomain.com`
+>
+> Repeat for any additional environments beyond DEV and TST.
 
 ### Step 2: Assign Access Policies via Role Collection
 

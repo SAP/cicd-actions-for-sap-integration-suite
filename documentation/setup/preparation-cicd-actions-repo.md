@@ -1,4 +1,8 @@
+# 🔧 Setup CICD Actions Repository
+
 ## 📁 Repository Setup
+
+> **Note:** This page is for teams that **self-host the `cicd-actions` library** in their own GitHub organization (i.e. a fork or private mirror of [SAP/cicd-actions-for-sap-integration-suite](https://github.com/SAP/cicd-actions-for-sap-integration-suite)). If you are using the public SAP repository directly, skip to step 2 in the [Setup Guide](README.md).
 
 Prepare a new repository to contain the cicd-actions.
 
@@ -8,7 +12,7 @@ To synchronize content from [https://github.com/SAP/cicd-actions-for-sap-integra
 
 ### What Will Be Synchronized
 
-The `.github` folder from the SAP repository contains:
+The SAP repository contains:
 
 - **`.github/actions/`** - Reusable composite actions:
   - `get-token/` - Authentication handling
@@ -18,12 +22,27 @@ The `.github` folder from the SAP repository contains:
   - `update-runtime/` - Runtime updates
   - And many more utility actions...
 
-- **`.github/workflows/`** - Workflow templates:
+- **`.github/workflows/`** - Reusable workflow definitions (called by consumer templates):
   - `analyze-changes.yml`
+  - `btp-download-access-policies-to-git.yml`
+  - `create-release.yml`
   - `delete-dir-from-git.yml`
   - `delete-upload.yml`
+  - `delete-upload-access-policies.yml`
+  - `download-access-policies-to-git.yml`
   - `download-btp-to-git.yml`
+  - `sync-partnerdirectory-to-eic.yml`
   - `update-externalized-iflow-parameters.yml`
+
+- **`templates/workflows/`** - Consumer-side workflow templates (synced into `cicd-intsuite` repositories):
+  - `sync-cicd-templates.yml` — the sync workflow itself
+  - `btp-deploy-delete.yml`, `btp-delete-from-btp-and-git.yml`, `btp-download-git-upload-deploy.yml`
+  - `btp-download-to-git.yml`, `btp-release-import.yml`, `btp-update-externalized-iflow-parameters.yml`
+  - `btp-sync-partnerdirectory-to-eic.yml`
+  - `btp-download-access-policies-to-git.yml`, `btp-download-upload-access-policies.yml`, `btp-delete-upload-access-policies.yml`
+  - `btp-dashboard-generator.yml`, `git-create-release.yml`
+
+- **`templates/scenarios/`** - Scenario manifests (JSON) that define which workflow sets are available for install/remove via the sync workflow
 
 ### Synchronization Methods
 
@@ -52,9 +71,14 @@ cicd-actions/
 │   │   └── update-runtime/
 │   └── workflows/
 │       ├── analyze-changes.yml
+│       ├── btp-download-access-policies-to-git.yml
+│       ├── create-release.yml
 │       ├── delete-dir-from-git.yml
 │       ├── delete-upload.yml
+│       ├── delete-upload-access-policies.yml
+│       ├── download-access-policies-to-git.yml
 │       ├── download-btp-to-git.yml
+│       ├── sync-partnerdirectory-to-eic.yml
 │       └── update-externalized-iflow-parameters.yml
 └── ... (other repository files)
 ```
