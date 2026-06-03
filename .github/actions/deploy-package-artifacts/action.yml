@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.1.0 - 2026-03-06 - Read and log LogLevel and Runtimes from enhanced deploytask entries (F. Spruenken)
+# 1.2.0 - 2026-05-19 - Apply MPL log level after deployment; only set for ERROR/WARN/NONE; abort on failure with disable hint (O. Weng)
 #
 name: Deploy/Undeploy Package Artifacts
 
@@ -28,6 +29,10 @@ inputs:
     options:
       - Deploy
       - Undeploy
+  enable-set-log-level:
+    description: "Set MPL log level after deployment (uses undocumented API — disable if endpoint breaks)"
+    required: false
+    default: 'true'
 
 runs:
   using: "composite"
@@ -39,6 +44,7 @@ runs:
         BTP_API_URL: ${{ inputs.btp-api-url }}
         FILE: ${{ inputs.file }}
         ACTION: ${{ inputs.action }}
+        ENABLE_SET_LOG_LEVEL: ${{ inputs.enable-set-log-level }}
       run: |
         if [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" != "deploy" ] && \
           [ "$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')" != "undeploy" ]; then
@@ -150,6 +156,32 @@ runs:
                 STATUS=$(jq -r '.d.Status' body.json)
                 if [ "$STATUS" = "STARTED" ]; then
                   echo "✅ $id STARTED."
+                  if [ "$ENABLE_SET_LOG_LEVEL" = "true" ] && [ "$type" = "Integration" ] && \
+                     [[ "$loglevel" == "ERROR" || "$loglevel" == "WARN" || "$loglevel" == "NONE" ]]; then
+                    echo "🔧 Setting log level '$loglevel' for $id..."
+                    LOG_PAYLOAD=$(jq -n \
+                      --arg id "$id" \
+                      --arg level "$loglevel" \
+                      '{"artifactSymbolicName": $id, "mplLogLevel": $level, "nodeType": "IFLMAP", "runtimeLocationId": "cloudintegration"}')
+                    # ⚠️ Undocumented internal API — not part of the official SAP Integration Suite public API.
+                    # May change or be removed without notice. Ref: https://community.sap.com/t5/integration-blog-posts/automate-log-level-commands-sap-cpi/bc-p/14391465
+                    LOG_ENDPOINT="$BTP_API_URL/Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentSetMplLogLevelCommand"
+                    LOG_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                      "$LOG_ENDPOINT" \
+                      -H "Authorization: $BEARER_TOKEN" \
+                      -H "Content-Type: application/json" \
+                      -d "$LOG_PAYLOAD")
+                    LOG_HTTP=$(echo "$LOG_RESPONSE" | tail -n1)
+                    if [[ "$LOG_HTTP" =~ ^2 ]]; then
+                      echo "✅ Log level set to '$loglevel' for $id"
+                    else
+                      echo "❌ Failed to set log level for $id (HTTP $LOG_HTTP)"
+                      echo "   URL: $LOG_ENDPOINT"
+                      echo "   ⚠️  This endpoint is undocumented and may change without notice."
+                      echo "   ℹ️  To disable log level setting permanently, set the GitHub variable 'BTP_SET_LOG_LEVEL' to 'false'."
+                      exit 1
+                    fi
+                  fi
                   EXIT_REASON="success"
                   break
                 elif [ "$STATUS" = "ERROR" ]; then

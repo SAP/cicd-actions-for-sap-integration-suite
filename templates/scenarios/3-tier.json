@@ -1,0 +1,15 @@
+{
+  "name": "3-tier",
+  "label": "3-tier landscape (DEV / TST / PRD)",
+  "type": "exclusive",
+  "description": "Standard 3-tier landscape (DEV/TST/PRD) core CI/CD workflows",
+  "workflows": [
+    "btp-download-to-git.yml",
+    "btp-download-git-upload-deploy.yml",
+    "btp-deploy-delete.yml",
+    "btp-delete-from-btp-and-git.yml",
+    "btp-update-externalized-iflow-parameters.yml",
+    "btp-release-import.yml",
+    "git-create-release.yml"
+  ]
+}

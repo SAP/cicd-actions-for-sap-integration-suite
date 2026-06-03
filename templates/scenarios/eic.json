@@ -1,0 +1,9 @@
+{
+  "name": "eic",
+  "label": "Edge Integration Cell (EIC)",
+  "type": "additive",
+  "description": "Edge Integration Cell — sync Partner Directory to EIC runtimes",
+  "workflows": [
+    "btp-sync-partnerdirectory-to-eic.yml"
+  ]
+}

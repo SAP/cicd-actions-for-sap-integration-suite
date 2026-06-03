@@ -1,0 +1,126 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+# 1.1.0 - 2026-05-21 - Rename storage directory from SecurityContent to AccessPolicies
+# 1.1.1 - 2026-05-27 - Exclude dynamic Id field from saved AccessPolicy.json and ArtifactReferences.json
+#
+
+name: 'download-access-policy'
+description: 'Composite action to download access policy from BTP'
+inputs:
+  bearer-token:
+    description: 'BEARER Token to access Integration Suite Artifacts'
+    required: true
+    type: string
+  access-policy-name:
+    description: 'Name of Access Policy to be downloaded'
+    required: true
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: true  
+
+runs:
+  using: 'composite'
+  steps:
+  ## Get All Access Policies
+  - name: Get All Access Policies
+    id: get-all-access-policies
+    shell: bash
+    env:
+      BEARER_TOKEN: ${{ inputs.bearer-token }}
+      BTP_API_URL: ${{ inputs.btp-api-url }}
+    run: |
+      echo "Fetching all Access Policies from $BTP_API_URL/api/v1/AccessPolicies?\$format=json"
+
+      curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/AccessPolicies?\$format=json" \
+        -H "Authorization: $BEARER_TOKEN" \
+        -H "Accept: application/json")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "Error: HTTP status $HTTP_STATUS received while fetching Access Policies"
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      echo "$BODY" > "${{ runner.temp }}/all-access-policies.json"
+      echo "Fetched Access Policies successfully."
+
+  ## Filter Access Policies by Name and get ID
+  - name: Filter Access Policy by Name
+    id: filter-access-policy
+    shell: bash
+    env:
+      POLICY_NAME: ${{ inputs.access-policy-name }}
+    run: |
+      echo "Filtering Access Policy by Name: $POLICY_NAME"
+
+      POLICY=$(jq --arg name "$POLICY_NAME" '.d.results[] | select(.RoleName == $name)' "${{ runner.temp }}/all-access-policies.json")
+
+      if [ -z "$POLICY" ]; then
+        echo "Error: Access Policy '$POLICY_NAME' not found."
+        exit 1
+      fi
+
+      POLICY_ID=$(echo "$POLICY" | jq -r '.Id')
+      echo "Found Access Policy '$POLICY_NAME' with ID: $POLICY_ID"
+
+      # Save policy (without internal OData metadata) to target folder
+      TARGET_DIR="btp-insuite/AccessPolicies/$POLICY_NAME"
+      mkdir -p "$TARGET_DIR"
+
+      NEW_POLICY=$(echo "$POLICY" | jq 'del(.__metadata, .Id, .ArtifactReferences, .AccessPolicyRuntimeAssignments)')
+
+      if [ -f "$TARGET_DIR/AccessPolicy.json" ]; then
+        echo "⚠️ AccessPolicy.json already exists — overwriting. Diff:"
+        diff <(cat "$TARGET_DIR/AccessPolicy.json") <(echo "$NEW_POLICY") || true
+      else
+        echo "🆕 AccessPolicy.json does not exist yet — creating."
+      fi
+
+      echo "$NEW_POLICY" > "$TARGET_DIR/AccessPolicy.json"
+
+      echo "policy-id=$POLICY_ID" >> "$GITHUB_OUTPUT"
+
+  ## Get Artifact References for Access Policy
+  - name: Get Artifact References
+    id: get-artifact-references
+    shell: bash
+    env:
+      BEARER_TOKEN: ${{ inputs.bearer-token }}
+      BTP_API_URL: ${{ inputs.btp-api-url }}
+      POLICY_ID: ${{ steps.filter-access-policy.outputs.policy-id }}
+      POLICY_NAME: ${{ inputs.access-policy-name }}
+    run: |
+      echo "Fetching Artifact References for Access Policy ID: $POLICY_ID"
+
+      curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/AccessPolicies(${POLICY_ID})/ArtifactReferences?\$format=json" \
+        -H "Authorization: $BEARER_TOKEN" \
+        -H "Accept: application/json")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "Error: HTTP status $HTTP_STATUS received while fetching Artifact References"
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      TARGET_DIR="btp-insuite/AccessPolicies/$POLICY_NAME"
+      NEW_REFS=$(echo "$BODY" | jq '.d.results[] |= del(.__metadata, .Id, .AccessPolicy)')
+
+      if [ -f "$TARGET_DIR/ArtifactReferences.json" ]; then
+        echo "⚠️ ArtifactReferences.json already exists — overwriting. Diff:"
+        diff <(cat "$TARGET_DIR/ArtifactReferences.json") <(echo "$NEW_REFS") || true
+      else
+        echo "🆕 ArtifactReferences.json does not exist yet — creating."
+      fi
+
+      echo "$NEW_REFS" > "$TARGET_DIR/ArtifactReferences.json"
+      echo "Artifact References saved to $TARGET_DIR/ArtifactReferences.json"
+

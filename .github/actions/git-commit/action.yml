@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-03-05 - Added EMU (Enterprise Managed User) actor resolution (O. Weng)
+# 1.0.2 - 2026-04-23 - Added directory input to support multiple target directories
 #
 name: GIT Commit
 description: GIT Commit
@@ -12,16 +13,19 @@ inputs:
   comment:
     description: "Commit Comment"
     required: true
+  directory:
+    description: "Working directory for git commit (relative to repo root)"
+    required: false
+    default: "btp-insuite/IntegrationPackages"
 
 runs:
   using: "composite"
   steps:
     - id: git-commit
-      working-directory: btp-insuite/IntegrationPackages
+      working-directory: ${{ inputs.directory }}
       shell: bash
       env:
         COMMENT: ${{ inputs.comment }}
-        
       run: |
         set -e
 

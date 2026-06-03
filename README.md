@@ -8,17 +8,18 @@ This repository provides a GitHub Actions–based CI/CD control layer for SAP In
 
 ## Overview
 
-- **Integration packages** and **Partner Directory IDs** are downloaded from SAP Integration Suite, extracted, and **stored in Git**  
+- **Integration packages**, **Partner Directory IDs**, and **Access Policies** are downloaded from SAP Integration Suite, extracted, and **stored in Git**  
 - Git holds both the **content** and **configuration**:
   - Externalized parameter values for IFLOWs  
   - Deployment configuration for IFLOWs
 - **GitHub Actions** orchestrate:
   - Synchronization between Design Time and Runtime  
-  - Deployment of packages and Partner Directory content to DEV / TST / PRD  
+  - Deployment of packages and Partner Directory content across configured environments (DEV, TST, and any additional stages)
+  - Download, upload, and deletion of Access Policies across environments  
   - Application of environment-specific configuration  
   - Calculate Release Import based on GIT Tags or Branches
 
-All operations use **public Integration Suite APIs only**.
+Most operations use **public Integration Suite APIs**. In exceptional cases, undocumented internal APIs are used as a temporary measure until public equivalents become available — these are clearly marked in the relevant action documentation and may change or be removed without notice by SAP.
 
 For more details on **initial setup** and **operations**, see the [detailed documentation](./documentation/README.md).
 

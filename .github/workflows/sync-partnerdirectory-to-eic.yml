@@ -1,0 +1,218 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-02-27 - Initial release for Edge Integration Cell support
+# 1.1.0 - 2026-05-05 - Add btp-eic-url-template input; EIC URL path not yet published — subject to change
+# 1.2.0 - 2026-05-21 - Split single GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
+#
+name: Sync Partner Directory to Edge Integration Cells
+
+on:
+  workflow_call:
+    inputs:
+      workflow-ref:
+        description: "GIT Reference Workflow should run in"
+        required: true
+        type: string
+      target-env:
+        description: "Environment (DEV Cloud Integration source)"
+        required: true
+        type: string
+      partnerdirectory-ids:
+        description: "Comma-separated list of Partner IDs to sync to EIC"
+        required: true
+        type: string
+      btp-api-user:
+        description: "BTP Service Key (ClientID) to access Token Endpoint"
+        required: true
+        type: string
+      btp-tec-user:
+        description: "BTP technical User with Access Policy for Integration Suite"
+        required: true
+        type: string
+      btp-token-url:
+        description: "URL on BTP to request Token"
+        required: true
+        type: string    
+      btp-api-url:
+        description: "URL on BTP to access APIs"
+        required: true
+        type: string
+      btp-eic-runtimes:
+        description: "Comma-separated list of Edge Integration Cell runtime identifiers to sync to"
+        required: true
+        type: string
+      btp-eic-url-template:
+        description: "URL path template for Edge Integration Cell API. Not published — subject to change. Required when btp-eic-runtimes is set."
+        required: false
+        type: string
+      git-cicd-orgrepo:
+        description: "Remote GIT Org/Repo for CICD"
+        required: true
+        type: string
+    secrets:
+      BTP_TEC_PASSWORD:
+        required: true
+      BTP_API_PASSWORD:
+        required: true
+      GIT_CICD_TOKEN:
+        description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY)"
+        required: false
+      GIT_CICD_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for CICD reader app (preferred — used together with GIT_CICD_APP_ID variable)"
+        required: false
+
+jobs:
+  preprocess-ids:
+    name: Preprocess Partner IDs
+    environment: ${{ inputs.target-env }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      partnerdirectory_ids: ${{ steps.parse-csv-to-json.outputs.to_upload }}
+
+    steps:
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+
+      - name: Parse Partner IDs to JSON array
+        id: parse-csv-to-json
+        uses: ./cicd-btp-insuite/.github/actions/parse-csv-to-json
+        with:
+          upload-ids: ${{ inputs.partnerdirectory-ids }}
+          empty-array-default: EmptyMatrix
+
+  sync-pd-to-eic:
+    needs: [preprocess-ids]
+    name: Sync PD ${{ matrix.id }} to EIC
+    environment: ${{ inputs.target-env }}
+    strategy:
+      max-parallel: 5
+      fail-fast: false
+      matrix:
+        id: ${{ fromJson(needs.preprocess-ids.outputs.partnerdirectory_ids) }}    
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    
+    steps:
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ matrix.id != 'EmptyMatrix' && vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Checkout cicd-actions-intsuite repo
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.git-cicd-orgrepo }}
+          ref: ${{ inputs.workflow-ref }}
+          path: cicd-btp-insuite
+          token: ${{ steps.cicd-token.outputs.token }}
+          
+      - name: Request OAuth Token
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        id: get-token
+        uses: ./cicd-btp-insuite/.github/actions/get-token
+        with:
+          btp-api-user: ${{ inputs.btp-api-user }}
+          btp-tec-user: ${{ inputs.btp-tec-user }}
+          btp-token-url: ${{ inputs.btp-token-url }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+
+      - name: Delete Partner Directory from EIC (before sync)
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        uses: ./cicd-btp-insuite/.github/actions/delete-partner-directory-entry
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          partner-id: ${{ matrix.id }}
+          delete-from-ci: 'false'
+          eic-runtimes: ${{ inputs.btp-eic-runtimes }}
+          eic-url-template: ${{ inputs.btp-eic-url-template }}
+
+      - name: Sync Partner Directory to EIC
+        if: ${{ matrix.id != 'EmptyMatrix' }}
+        uses: ./cicd-btp-insuite/.github/actions/sync-pid-to-eic
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ inputs.btp-api-url }}
+          partner-id: ${{ matrix.id }}
+          eic-runtimes: ${{ inputs.btp-eic-runtimes }}
+          eic-url-template: ${{ inputs.btp-eic-url-template }}
+
+  output-status:
+    needs: [preprocess-ids, sync-pd-to-eic]
+    environment: ${{ inputs.target-env }}
+    if: ${{ always() }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    steps:
+      - name: Echo Status
+        run: |
+          echo "========================================"
+          echo "📊 Partner Directory EIC Sync Summary"
+          echo "========================================"
+          echo "Environment: ${{ inputs.target-env }}"
+          echo "EIC Runtimes: ${{ inputs.btp-eic-runtimes }}"
+          echo "Partner IDs: ${{ inputs.partnerdirectory-ids }}"
+          echo "----------------------------------------"
+          echo "needs.preprocess-ids.result = ${{ needs.preprocess-ids.result }}"
+          echo "needs.sync-pd-to-eic.result = ${{ needs.sync-pd-to-eic.result }}"
+          echo "========================================"

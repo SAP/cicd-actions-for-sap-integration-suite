@@ -4,6 +4,7 @@
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (O. Weng)
 # 1.0.1 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
+# 1.0.2 - 2026-05-19 - Pass enable-set-log-level through to deploy-package-artifacts (O. Weng)
 #
 name: "Update Runtime from Design Time (Deploy / Undeploy)"
 description: "Composite action to deploy or undeploy package artifacts in SAP BTP Integration Suite."
@@ -46,6 +47,10 @@ inputs:
     description: "Comma-separated list of IFLOW IDs to exclude from deployment"
     required: false
     default: ""
+  enable-set-log-level:
+    description: "Set MPL log level after deployment (uses undocumented API — disable if endpoint breaks)"
+    required: false
+    default: 'true'
     
 runs:
   using: "composite"
@@ -173,3 +178,4 @@ runs:
         btp-api-url: ${{ inputs.btp-api-url }}
         file: ${{ runner.temp }}/DeployTask.${{ inputs.package-id }}
         action: ${{ inputs.mode }}
+        enable-set-log-level: ${{ inputs.enable-set-log-level }}

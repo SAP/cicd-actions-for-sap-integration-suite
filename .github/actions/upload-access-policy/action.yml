@@ -1,0 +1,200 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-23 - Initial release
+# 1.0.1 - 2026-05-06 - Fix shell injection risk: use jq for JSON payload construction
+# 1.1.0 - 2026-05-21 - Rename storage directory from SecurityContent to AccessPolicies
+#
+
+name: 'upload-access-policy'
+description: 'Composite action to upload an access policy from GIT to BTP Integration Suite'
+inputs:
+  bearer-token:
+    description: 'BEARER Token to access Integration Suite Artifacts'
+    required: true
+    type: string
+  access-policy-name:
+    description: 'Name (RoleName) of the Access Policy to upload'
+    required: true
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+
+  ## Read Access Policy from GIT and create or update on BTP
+  - name: Upload Access Policy
+    id: upload-access-policy
+    shell: bash
+    env:
+      BEARER_TOKEN: ${{ inputs.bearer-token }}
+      BTP_API_URL: ${{ inputs.btp-api-url }}
+      POLICY_NAME: ${{ inputs.access-policy-name }}
+    run: |
+      SOURCE_DIR="btp-insuite/AccessPolicies/$POLICY_NAME"
+
+      if [ ! -f "$SOURCE_DIR/AccessPolicy.json" ]; then
+        echo "Error: $SOURCE_DIR/AccessPolicy.json not found."
+        exit 1
+      fi
+
+      POLICY=$(cat "$SOURCE_DIR/AccessPolicy.json")
+      ROLE_NAME=$(echo "$POLICY" | jq -r '.RoleName')
+      DESCRIPTION=$(echo "$POLICY" | jq -r '.Description')
+
+      echo "Checking if Access Policy '$ROLE_NAME' already exists on BTP..."
+
+      FILTER_URL="$BTP_API_URL/api/v1/AccessPolicies?\$filter=RoleName%20eq%20'$ROLE_NAME'&\$format=json"
+      curl_response=$(curl -s -w "\n%{http_code}" -X GET "$FILTER_URL" \
+        -H "Authorization: $BEARER_TOKEN" \
+        -H "Accept: application/json")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "Error: HTTP status $HTTP_STATUS while checking existing policies."
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      EXISTING_ID=$(echo "$BODY" | jq -r '.d.results[0].Id // empty')
+
+      if [ -n "$EXISTING_ID" ]; then
+        echo "⚠️ Access Policy '$ROLE_NAME' already exists with ID $EXISTING_ID — updating..."
+
+        curl_response=$(curl -s -w "\n%{http_code}" -X PUT "$BTP_API_URL/api/v1/AccessPolicies(${EXISTING_ID}L)" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "$(jq -n --arg rn "$ROLE_NAME" --arg desc "$DESCRIPTION" '{"RoleName":$rn,"Description":$desc}')")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "204" ]; then
+          echo "Error: HTTP status $HTTP_STATUS while updating Access Policy."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+
+        echo "policy-id=$EXISTING_ID" >> "$GITHUB_OUTPUT"
+        echo "✅ Access Policy '$ROLE_NAME' updated."
+      else
+        echo "🆕 Access Policy '$ROLE_NAME' does not exist — creating..."
+
+        curl_response=$(curl -s -w "\n%{http_code}" -X POST "$BTP_API_URL/api/v1/AccessPolicies" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          -d "$(jq -n --arg rn "$ROLE_NAME" --arg desc "$DESCRIPTION" '{"RoleName":$rn,"Description":$desc}')")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        BODY=$(echo "$curl_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "201" ]; then
+          echo "Error: HTTP status $HTTP_STATUS while creating Access Policy."
+          echo "Response body: $BODY"
+          exit 1
+        fi
+
+        NEW_ID=$(echo "$BODY" | jq -r '.d.Id')
+        echo "policy-id=$NEW_ID" >> "$GITHUB_OUTPUT"
+        echo "✅ Access Policy '$ROLE_NAME' created with ID $NEW_ID."
+      fi
+
+  ## Sync Artifact References
+  - name: Upload Artifact References
+    id: upload-artifact-references
+    shell: bash
+    env:
+      BEARER_TOKEN: ${{ inputs.bearer-token }}
+      BTP_API_URL: ${{ inputs.btp-api-url }}
+      POLICY_ID: ${{ steps.upload-access-policy.outputs.policy-id }}
+      POLICY_NAME: ${{ inputs.access-policy-name }}
+    run: |
+      SOURCE_DIR="btp-insuite/AccessPolicies/$POLICY_NAME"
+
+      if [ ! -f "$SOURCE_DIR/ArtifactReferences.json" ]; then
+        echo "No ArtifactReferences.json found — skipping."
+        exit 0
+      fi
+
+      echo "Fetching existing Artifact References for Policy ID $POLICY_ID..."
+
+      curl_response=$(curl -s -w "\n%{http_code}" -X GET "$BTP_API_URL/api/v1/AccessPolicies(${POLICY_ID}L)/ArtifactReferences?\$format=json" \
+        -H "Authorization: $BEARER_TOKEN" \
+        -H "Accept: application/json")
+
+      HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+      BODY=$(echo "$curl_response" | sed '$d')
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "Error: HTTP status $HTTP_STATUS while fetching existing Artifact References."
+        echo "Response body: $BODY"
+        exit 1
+      fi
+
+      # Delete all existing references first
+      EXISTING_IDS=$(echo "$BODY" | jq -r '.d.results[].Id')
+      for REF_ID in $EXISTING_IDS; do
+        echo "Deleting existing Artifact Reference ID $REF_ID..."
+        curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/ArtifactReferences(${REF_ID}L)" \
+          -H "Authorization: $BEARER_TOKEN")
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "204" ]; then
+          echo "Error: HTTP status $HTTP_STATUS while deleting Artifact Reference $REF_ID."
+          echo "Response body: $(echo "$curl_response" | sed '$d')"
+          exit 1
+        fi
+      done
+
+      # Create all references from GIT
+      REFERENCES=$(cat "$SOURCE_DIR/ArtifactReferences.json" | jq -c '.d.results[]')
+      while IFS= read -r REF; do
+        [ -z "$REF" ] && continue
+        NAME=$(echo "$REF" | jq -r '.Name')
+        DESCRIPTION=$(echo "$REF" | jq -r '.Description')
+        TYPE=$(echo "$REF" | jq -r '.Type')
+        CONDITION_ATTR=$(echo "$REF" | jq -r '.ConditionAttribute')
+        CONDITION_VAL=$(echo "$REF" | jq -r '.ConditionValue')
+        CONDITION_TYPE=$(echo "$REF" | jq -r '.ConditionType')
+
+        echo "Creating Artifact Reference '$NAME' (${TYPE})..."
+
+        PAYLOAD=$(jq -n \
+          --arg name "$NAME" \
+          --arg desc "$DESCRIPTION" \
+          --arg type "$TYPE" \
+          --arg condAttr "$CONDITION_ATTR" \
+          --arg condVal "$CONDITION_VAL" \
+          --arg condType "$CONDITION_TYPE" \
+          --arg policyId "$POLICY_ID" \
+          '{
+            "Name": $name,
+            "Description": $desc,
+            "Type": $type,
+            "ConditionAttribute": $condAttr,
+            "ConditionValue": $condVal,
+            "ConditionType": $condType,
+            "AccessPolicy": {"Id": $policyId}
+          }')
+
+        curl_response=$(curl -s -w "\n%{http_code}" -X POST "$BTP_API_URL/api/v1/ArtifactReferences" \
+          -H "Authorization: $BEARER_TOKEN" \
+          -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          -d "$PAYLOAD")
+
+        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+        if [ "$HTTP_STATUS" != "201" ]; then
+          echo "Error: HTTP status $HTTP_STATUS while creating Artifact Reference '$NAME'."
+          echo "Response body: $(echo "$curl_response" | sed '$d')"
+          exit 1
+        fi
+        echo "✅ Artifact Reference '$NAME' created."
+      done <<< "$REFERENCES"
+
+      echo "✅ All Artifact References synced for Policy '$POLICY_NAME'."

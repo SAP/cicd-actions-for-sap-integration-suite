@@ -5,8 +5,7 @@
 # 1.0.0 - 2025-11-24 - Initial release (F. Spruenken)
 # 1.0.1 - 2026-02-25 - Add exclude-iflow-ids parameter to exclude specific IFLOWs from deployment (O. Weng)
 # 1.1.0 - 2026-03-05 - Support enhanced Environments override format for Deploy (O. Weng)
-# 1.2.0 - 2026-03-06 - Add LogLevel and Runtimes to deploytask entries with environment override resolution (O. Weng)
-# 1.2.1 - 2026-03-06 - Display sorted iFlow list with ID, Name, effective Rank, Rank source, and sort method (O. Weng)
+# 1.2.0 - 2026-03-06 - Add LogLevel and Runtimes to deploytask entries with environment override resolution; display sorted iFlow list with ID, Name, effective Rank, Rank source, and sort method (O. Weng)
 #
 
 name: Pass iFlow JSON with IDs to be added for deployment

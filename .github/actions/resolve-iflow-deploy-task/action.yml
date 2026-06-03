@@ -1,0 +1,138 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Oliver Weng <sap.weng@extaccount.com>
+#
+# Version History:
+# 1.0.0 - 2026-05-21 - Initial release (O.Weng)
+#
+
+name: Resolve IFlow Deploy Task
+description: >
+  Reads Deployment_INTEGRATION_FLOW.json for a single iFlow and produces a
+  deploytasks JSON file (ready for deploy-package-artifacts). Applies the
+  3-level environment priority chain (Environments[$env].Deploy → $env flat →
+  Deploy default) for Deploy, LogLevel, and Runtimes — same as
+  add-iflows-for-deployment.
+
+inputs:
+  package-id:
+    description: "Package ID (used to locate the PackageName~PackageID folder)"
+    required: true
+  iflow-id:
+    description: "Artifact ID of the iFlow to resolve"
+    required: true
+  target-env:
+    description: "Target environment (e.g. DEV, TST, PRD)"
+    required: true
+
+outputs:
+  file:
+    description: "Path to the generated deploytasks JSON file (for deploy-package-artifacts)"
+    value: ${{ steps.resolve.outputs.file }}
+  should-deploy:
+    description: "true if the iFlow is marked for deployment in target-env, false otherwise"
+    value: ${{ steps.resolve.outputs.should-deploy }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: resolve
+      working-directory: btp-insuite/IntegrationPackages
+      shell: bash
+      env:
+        PACKAGEID: ${{ inputs.package-id }}
+        IFLOW_ID: ${{ inputs.iflow-id }}
+        TARGET_ENV: ${{ inputs.target-env }}
+      run: |
+        echo "==== Resolve IFlow Deploy Task ===="
+        echo "Package ID : $PACKAGEID"
+        echo "IFlow ID   : $IFLOW_ID"
+        echo "Target Env : $TARGET_ENV"
+
+        # ── 1. Locate the PackageName~PackageID directory ────────────────────
+        matches=()
+        for dir in ./*/; do
+          dir_name=$(basename "$dir")
+          if [[ "$dir_name" == *~$PACKAGEID ]]; then
+            matches+=("$dir")
+          fi
+        done
+
+        if [[ ${#matches[@]} -gt 1 ]]; then
+          echo "❌ Multiple directories match *~$PACKAGEID:"
+          for m in "${matches[@]}"; do echo "   $m"; done
+          exit 1
+        elif [[ ${#matches[@]} -eq 0 ]]; then
+          echo "❌ No directory found matching *~$PACKAGEID. Package not in repo."
+          exit 1
+        fi
+
+        dir="${matches[0]}"
+        echo "✅ Found package directory: $(basename "$dir")"
+
+        # ── 2. Locate the deployment config ──────────────────────────────────
+        DEPLOYMENT_FILE="${dir}Configuration/Deployment_INTEGRATION_FLOW.json"
+        DEPLOYMENT_FILE="${DEPLOYMENT_FILE//\/\//\/}"
+
+        if [[ ! -f "$DEPLOYMENT_FILE" ]]; then
+          echo "❌ Deployment_INTEGRATION_FLOW.json not found at $DEPLOYMENT_FILE"
+          exit 1
+        fi
+
+        # ── 3. Find the iFlow entry ───────────────────────────────────────────
+        ENTRY=$(jq -c --arg id "$IFLOW_ID" \
+          '.PackageIntegrationFlowDeployments.IntegrationFlows[]? | select(.ArtifactID == $id)' \
+          "$DEPLOYMENT_FILE")
+
+        if [[ -z "$ENTRY" ]]; then
+          echo "❌ IFlow $IFLOW_ID not found in $DEPLOYMENT_FILE"
+          exit 1
+        fi
+
+        echo "Found entry: $ENTRY"
+
+        # ── 4. Resolve Deploy flag (3-level priority chain) ──────────────────
+        env_override=$(echo "$ENTRY" | jq -r --arg env "$TARGET_ENV" '.Environments[$env].Deploy // "not_found"')
+        stage_value=$(echo "$ENTRY"  | jq -r --arg env "$TARGET_ENV" '.[$env] // "not_found"')
+
+        if [[ "$env_override" != "not_found" ]]; then
+          deploy_decision="$env_override"
+          echo "  → Environments.$TARGET_ENV.Deploy = $deploy_decision"
+        elif [[ "$stage_value" != "not_found" ]]; then
+          deploy_decision="$stage_value"
+          echo "  → $TARGET_ENV (legacy flat) = $deploy_decision"
+        else
+          deploy_decision=$(echo "$ENTRY" | jq -r '.Deploy // "false"')
+          echo "  → Deploy (global default) = $deploy_decision"
+        fi
+
+        # ── 5. Resolve LogLevel and Runtimes (priority chain) ────────────────
+        effective_loglevel=$(echo "$ENTRY" | jq -r --arg env "$TARGET_ENV" \
+          '.Environments[$env].LogLevel // .LogLevel // "INFO"')
+        effective_runtimes=$(echo "$ENTRY" | jq -r --arg env "$TARGET_ENV" \
+          '.Environments[$env].Runtimes // .Runtimes // "iflmap"')
+
+        echo "  → LogLevel : $effective_loglevel"
+        echo "  → Runtimes : $effective_runtimes"
+
+        # ── 6. Generate deploytasks JSON ─────────────────────────────────────
+        OUT_FILE="${{ runner.temp }}/DeployTask.${IFLOW_ID}"
+
+        if [[ "$deploy_decision" == "true" ]]; then
+          echo "🚀 $IFLOW_ID marked for deployment in $TARGET_ENV"
+          jq -n \
+            --arg id   "$IFLOW_ID" \
+            --arg type "Integration" \
+            --arg loglevel  "$effective_loglevel" \
+            --arg runtimes  "$effective_runtimes" \
+            '{d: {deploytasks: [{id: $id, type: $type, loglevel: $loglevel, runtimes: $runtimes}]}}' \
+            > "$OUT_FILE"
+          echo "should-deploy=true"  >> "$GITHUB_OUTPUT"
+        else
+          echo "ℹ️  $IFLOW_ID has Deploy=$deploy_decision for $TARGET_ENV — skipping"
+          echo '{"d":{"deploytasks":[]}}' > "$OUT_FILE"
+          echo "should-deploy=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "file=$OUT_FILE" >> "$GITHUB_OUTPUT"
+        echo "==== Deploytasks JSON ===="
+        cat "$OUT_FILE"

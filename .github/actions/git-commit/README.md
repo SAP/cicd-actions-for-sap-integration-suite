@@ -12,9 +12,10 @@ This action stages all modified files in the repository, creates a Git commit wi
 
 ## ⚙️ Inputs
 
-| Name    | Required | Description                     |
-|---------|----------|---------------------------------|
-| comment | ✅ Yes   | Commit message/comment text.    |
+| Name    | Required | Default | Description                     |
+|---------|----------|---------|---------------------------------|
+| comment | ✅ Yes   | —       | Commit message/comment text.    |
+| working-directory | ❌ No | `btp-insuite/IntegrationPackages` | Directory to run git commands in. |
 
 ---
 
@@ -36,6 +37,25 @@ jobs:
         uses: ./.github/actions/git-commit
         with:
           comment: "Update integration package configuration"
+
+  # Example with custom working directory (e.g. for dashboard generation)
+  commit-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: suite-repo
+
+      - name: Generate dashboard
+        run: echo "# Dashboard" > suite-repo/dashboard.md
+
+      - name: Commit dashboard
+        uses: ./.github/actions/git-commit
+        with:
+          comment: "📊 Update Integration Suite Dashboard [skip ci]"
+          working-directory: suite-repo
 
   extract-and-commit:
     runs-on: ubuntu-latest
@@ -126,7 +146,7 @@ This action has no outputs. It performs Git operations directly on the repositor
 
 - **Enterprise Managed Users (EMU)**: The action automatically detects and strips EMU enterprise shortcode suffixes from `github.actor`. If the actor name contains an underscore suffix (e.g., `johndoe_a1b2c3d4`), it resolves to the base username (e.g., `johndoe`) for Git identity configuration. This ensures commits are attributed correctly regardless of EMU configuration.
 
-- **Working Directory**: The action operates in `btp-insuite/IntegrationPackages` directory. Only changes within this directory are staged and committed.
+- **Working Directory**: By default the action operates in `btp-insuite/IntegrationPackages`. You can override this with the `working-directory` input to commit changes from any directory (e.g. `suite-repo` for dashboard updates).
 
 - **Stage All Changes**: The action uses `git add -A` to stage all modifications, new files, and deletions in the working directory.
 

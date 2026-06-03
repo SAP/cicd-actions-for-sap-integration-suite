@@ -3,6 +3,8 @@
 #
 # Version History:
 # 1.0.0 - 2026-03-13 - Initial release
+# 1.1.0 - 2026-05-20 - Validate GIT_CICD_REF; use variable for cicd-actions checkout ref (O.Weng)
+# 1.2.0 - 2026-05-21 - Split single GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
 #
 
 name: (Admin) GIT Create Release
@@ -31,19 +33,69 @@ jobs:
     outputs:
       git-cicd-orgrepo: ${{ steps.export.outputs.git-cicd-orgrepo }}
     steps:
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — consumer org
+        id: app-token-org
+        if: ${{ vars.GIT_GITHUB_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Resolve org token
+        id: org-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-org.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_ORG_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No org token: set GIT_GITHUB_APP_ID + GIT_GITHUB_APP_PRIVATE_KEY, or set GIT_ORG_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Checkout cicd-actions repo
         uses: actions/checkout@v4
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
-          ref: v1
+          ref: ${{ vars.GIT_CICD_REF }}
           path: cicd-btp-insuite
-          token: ${{ secrets.GIT_CICD_TOKEN }}
+          token: ${{ steps.cicd-token.outputs.token }}
 
       - name: Check team authorization
         uses: ./cicd-btp-insuite/.github/actions/check-team-authorization
         with:
           team-slug: ${{ vars.BTP_ADMIN_TEAM_SLUG }}
-          github-token: ${{ secrets.GIT_ORG_TOKEN }}
+          github-token: ${{ steps.org-token.outputs.token }}
 
       - name: Export vars
         id: export
@@ -62,3 +114,5 @@ jobs:
     secrets:
       GIT_CICD_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
       GIT_SUITE_TOKEN: ${{ secrets.GIT_SUITE_TOKEN }}
+      GIT_GITHUB_APP_PRIVATE_KEY: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+      GIT_CICD_APP_PRIVATE_KEY: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}

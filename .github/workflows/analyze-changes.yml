@@ -6,6 +6,7 @@
 # 1.0.1 - 2026-01-26 - Introduce environment variable RUNS_ON (O. Weng)
 # 1.0.2 - 2026-01-28 - Changed to actions/upload-artifact@v3 to support also older GHES installations (O. Weng)
 # 1.0.3 - 2026-02-26 - Use v4 for github.com/ghe.com, v3 for GHES (O. Weng)
+# 1.0.4 - 2026-05-21 - Add explicit permissions block for GITHUB_TOKEN hardening; split GitHub App into CICD reader (GIT_CICD_APP_ID) and consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
 #
 name: Analyze Changes between 2 GIT Ref/Tag
 
@@ -58,8 +59,11 @@ on:
       BTP_API_PASSWORD:
         required: true
       GIT_CICD_TOKEN:
-        description: "GIT Token of remote CICD Repo"
-        required: true
+        description: "GIT Token of remote CICD Repo (fallback — superseded by GIT_CICD_APP_ID + GIT_CICD_APP_PRIVATE_KEY)"
+        required: false
+      GIT_CICD_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for CICD reader app (preferred — used together with GIT_CICD_APP_ID variable)"
+        required: false
     outputs:
       package_upload_csv_content:
         description: "CSV content of packages to upload"
@@ -74,6 +78,9 @@ on:
         description: "CSV content of partner directory entries to delete"
         value: ${{ jobs.analyze-changes.outputs.pid_delete_csv_content }}
 
+permissions:
+  contents: read
+
 jobs:
   analyze-changes:
     name: ${{ inputs.base-ref }} -> ${{ inputs.target-ref }}
@@ -86,13 +93,41 @@ jobs:
       pid_delete_csv_content: ${{ steps.output-csv-contents.outputs.pid_delete_content }}
 
     steps:
+      # ─── Token resolution (GitHub App preferred, PAT fallback) ───
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ inputs.git-cicd-orgrepo }}
+        run: echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token-cicd
+        if: ${{ vars.GIT_CICD_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Resolve CICD token
+        id: cicd-token
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token-cicd.outputs.token }}
+          PAT_TOKEN: ${{ secrets.GIT_CICD_TOKEN }}
+        run: |
+          TOKEN="${APP_TOKEN:-$PAT_TOKEN}"
+          [ -z "$TOKEN" ] && echo "🛑 No CICD token: set GIT_CICD_APP_ID variable + GIT_CICD_APP_PRIVATE_KEY secret, or set GIT_CICD_TOKEN" && exit 1
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
       - name: Checkout cicd-actions-intsuite repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
           ref: ${{ inputs.workflow-ref }}
           path: cicd-btp-insuite
-          token: ${{ secrets.GIT_CICD_TOKEN }}
+          token: ${{ steps.cicd-token.outputs.token }}
          
       - name: Get Compare JSON from GIT CLI for IntegrationPackages
         id: get-compare-packages

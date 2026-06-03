@@ -3,9 +3,10 @@
 #
 # Version History:
 # 1.0.0 - 2025-11-24 - Initial release (F. Sprünken)
+# 1.1.0 - 2026-02-27 - Add eic-runtimes parameter for multiple EIC runtimes; add delete-from-ci parameter to optionally skip CI deletion (O. Weng)
 #
 name: Delete Partner Directory Entry from BTP
-description: Delete Partner Directory Entry from BTP
+description: Delete Partner Directory Entry from BTP (Cloud Integration and/or Edge Integration Cell runtimes)
 
 inputs:
   bearer-token:
@@ -17,6 +18,17 @@ inputs:
   partner-id:
     description: "Partner ID to delete"
     required: true
+  delete-from-ci:
+    description: "Whether to delete from Cloud Integration (default: true). Set to 'false' to skip CI and only delete from EIC runtimes."
+    required: false
+    default: "true"
+  eic-runtimes:
+    description: "Comma-separated list of Edge Integration Cell runtime identifiers (optional). If provided, deletes from all specified EIC runtimes."
+    required: false
+    default: ""
+  eic-url-template:
+    description: "URL path template for EIC API access. Contains {runtime} as placeholder for the runtime identifier. NOTE: Not published. Pre-work to support EIC — do not use productively. Subject to change."
+    required: false
 
 runs:
   using: "composite"
@@ -27,19 +39,102 @@ runs:
         BEARER_TOKEN: ${{ inputs.bearer-token }}
         BTP_API_URL: ${{ inputs.btp-api-url }}
         PARTNERID: ${{ inputs.partner-id }}
+        DELETE_FROM_CI: ${{ inputs.delete-from-ci }}
+        EIC_RUNTIMES: ${{ inputs.eic-runtimes }}
+        EIC_URL_TEMPLATE: ${{ inputs.eic-url-template }}
       run: |
-        echo "DELETE Partner ID $PARTNERID from $BTP_API_URL/api/v1/Partners('$PARTNERID')"
-
-        curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$BTP_API_URL/api/v1/Partners('$PARTNERID')" \
-          -H "Authorization: $BEARER_TOKEN")
-
-        HTTP_STATUS=$(echo "$curl_response" | tail -n1)
-        BODY=$(echo "$curl_response" | sed '$d')
-
-        # Status must be 204
-        if [ "$HTTP_STATUS" != "204" ]; then
-          echo "Error: HTTP status $HTTP_STATUS received while deleting $PARTNERID"
-          echo "Response body: $BODY"
-          exit 1
+        set -euo pipefail
+        
+        # Function to delete from a specific endpoint
+        delete_from_endpoint() {
+          local api_endpoint="$1"
+          local target_name="$2"
+          
+          echo "🗑️ Deleting Partner ID $PARTNERID from $target_name"
+          echo "   🔗 API Endpoint: $api_endpoint"
+          
+          curl_response=$(curl -s -w "\n%{http_code}" -X DELETE "$api_endpoint" \
+            -H "Authorization: $BEARER_TOKEN") || {
+            echo "   ⚠️ Network error occurred"
+            return 1
+          }
+          
+          HTTP_STATUS=$(echo "$curl_response" | tail -n1)
+          BODY=$(echo "$curl_response" | sed '$d')
+          
+          if [ "$HTTP_STATUS" == "204" ]; then
+            echo "   ✅ Successfully deleted (HTTP $HTTP_STATUS)"
+            return 0
+          elif [ "$HTTP_STATUS" == "404" ]; then
+            echo "   ℹ️ Partner ID not found (HTTP $HTTP_STATUS) - skipping"
+            return 0
+          else
+            echo "   ❌ Error: HTTP status $HTTP_STATUS"
+            if [[ -n "$BODY" ]]; then
+              echo "   Response: $BODY"
+            fi
+            return 1
+          fi
+        }
+        
+        echo "========================================="
+        echo "🗑️ Deleting Partner Directory Entry"
+        echo "========================================="
+        echo "📦 Partner ID: $PARTNERID"
+        echo "📍 Delete from CI: $DELETE_FROM_CI"
+        if [[ -n "$EIC_RUNTIMES" ]]; then
+          echo "📍 EIC Runtimes: $EIC_RUNTIMES"
         fi
-        echo "HTTP status $HTTP_STATUS received. Deletion of $PARTNERID successfully!"
+        
+        # Track success/failure
+        HAS_ERRORS=false
+        DELETED_COUNT=0
+        
+        # Delete from Cloud Integration if enabled
+        if [[ "$DELETE_FROM_CI" == "true" ]]; then
+          echo ""
+          CI_ENDPOINT="$BTP_API_URL/api/v1/Partners('$PARTNERID')"
+          if delete_from_endpoint "$CI_ENDPOINT" "Cloud Integration"; then
+            ((DELETED_COUNT++)) || true
+          else
+            HAS_ERRORS=true
+          fi
+        else
+          echo ""
+          echo "ℹ️ Skipping Cloud Integration deletion (delete-from-ci=false)"
+        fi
+        
+        # If eic-runtimes is provided, delete from each EIC runtime
+        if [[ -n "$EIC_RUNTIMES" ]]; then
+          IFS=',' read -ra RUNTIMES <<< "$EIC_RUNTIMES"
+          for runtime in "${RUNTIMES[@]}"; do
+            runtime=$(echo "$runtime" | xargs)  # Trim whitespace
+            if [[ -n "$runtime" ]]; then
+              echo ""
+              if [[ -z "$EIC_URL_TEMPLATE" ]]; then
+                echo "❌ eic-url-template is required when eic-runtimes is set. Configure BTP_EIC_URL_TEMPLATE (URL path not yet published, subject to change)."
+                exit 1
+              fi
+              EIC_PATH="${EIC_URL_TEMPLATE//\{runtime\}/$runtime}"
+              EIC_ENDPOINT="$BTP_API_URL${EIC_PATH}/Partners('$PARTNERID')"
+              if delete_from_endpoint "$EIC_ENDPOINT" "EIC ($runtime)"; then
+                ((DELETED_COUNT++)) || true
+              else
+                HAS_ERRORS=true
+              fi
+            fi
+          done
+        fi
+        
+        echo ""
+        echo "========================================="
+        if [[ "$DELETED_COUNT" -eq 0 ]]; then
+          echo "⚠️ No deletion targets specified (enable delete-from-ci or provide eic-runtimes)"
+          exit 1
+        elif [[ "$HAS_ERRORS" == "true" ]]; then
+          echo "⚠️ Deletion completed with some errors"
+          # Don't fail the action if some deletions failed (Partner may not exist everywhere)
+        else
+          echo "✅ Deletion completed successfully"
+        fi
+        echo "========================================="

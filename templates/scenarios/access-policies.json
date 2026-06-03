@@ -1,0 +1,11 @@
+{
+  "name": "access-policies",
+  "label": "Access Policies",
+  "type": "additive",
+  "description": "Access Policies — download from BTP to Git and upload to target environments",
+  "workflows": [
+    "btp-download-access-policies-to-git.yml",
+    "btp-download-upload-access-policies.yml",
+    "btp-delete-upload-access-policies.yml"
+  ]
+}

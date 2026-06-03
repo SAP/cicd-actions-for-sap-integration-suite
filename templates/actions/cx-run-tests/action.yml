@@ -1,0 +1,87 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-23 - Initial release
+# 1.1.0 - 2026-03-25 - Align with cx-derive-iflow-exclusions pattern; add all caller inputs
+#
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║  CUSTOMER EXIT TEMPLATE - Run Tests                                ║
+# ║                                                                    ║
+# ║  This is a template/placeholder action. Customers should copy      ║
+# ║  this file into their intsuite repository or their extension       ║
+# ║  repository at:                                                    ║
+# ║    .github/actions/cx-run-tests/action.yml                         ║
+# ║                                                                    ║
+# ║  Implement custom logic to run tests against downloaded            ║
+# ║  integration packages or partner directories.                      ║
+# ╚════════════════════════════════════════════════════════════════════╝
+#
+name: 'Customer Exit - Run Tests'
+description: 'Customer exit to run tests for integration packages or partner directories. Implement your custom test logic in this action.'
+
+inputs:
+  intsuite-repo-path:
+    description: 'Path where the integration suite repository is checked out'
+    required: false
+    default: ''
+  extension-repo-path:
+    description: 'Path where the extension repository is checked out'
+    required: false
+    default: ''
+  package-id:
+    description: 'ID of the package to run tests for'
+    required: false
+    default: ''
+  btp-api-url:
+    description: 'URL on BTP to access APIs'
+    required: false
+    default: ''
+  bearer-token:
+    description: 'Bearer token for authenticating against the BTP API'
+    required: false
+    default: ''
+  mode:
+    description: 'Mode of the package (e.g. PartnerDirectory or IntegrationPackages)'
+    required: false
+    default: ''
+
+outputs:
+  test-results:
+    description: 'Results of the executed tests'
+    value: ${{ steps.run-tests.outputs.test-results }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Tests
+      id: run-tests
+      shell: bash
+      run: |
+        echo "════════════════════════════════════════════════════════"
+        echo "🧪 CUSTOMER EXIT - Run Tests"
+        echo "════════════════════════════════════════════════════════"
+        echo "📦 Package ID:         ${{ inputs.package-id }}"
+        echo "📁 Intsuite Repo Path: ${{ inputs.intsuite-repo-path }}"
+        echo "📁 Extension Repo Path:${{ inputs.extension-repo-path }}"
+        echo "🌐 BTP API URL:        ${{ inputs.btp-api-url }}"
+        echo "⚙️  Mode:               ${{ inputs.mode }}"
+        echo "════════════════════════════════════════════════════════"
+        echo ""
+
+        # ┌────────────────────────────────────────────────────────┐
+        # │ TODO: Implement your custom test logic here.           │
+        # │                                                        │
+        # │ The downloaded integration packages or partner directories │
+        # │ are available at the intsuite-repo-path. You can use the │
+        # │ bearer-token and btp-api-url to access BTP APIs if needed. │
+        # │                                                        │
+        # │ Set the output to your test results summary.           │
+        # │                                                        │
+        # │ Example:                                               │
+        # │   echo "test-results=All tests passed" >> $GITHUB_OUTPUT │
+        # └────────────────────────────────────────────────────────┘
+
+        echo "test-results=" >> $GITHUB_OUTPUT
+        echo "ℹ️  This is the default template. No tests configured."
+        echo "   Implement your custom test logic to run tests."

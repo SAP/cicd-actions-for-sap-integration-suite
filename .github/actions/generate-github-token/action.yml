@@ -1,0 +1,68 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-05-12 - Initial release (O. Weng)
+# 1.0.1 - 2026-05-21 - Update description to document two-app split: CICD reader (GIT_CICD_APP_ID) vs consumer bot (GIT_GITHUB_APP_ID) (O.Weng)
+#
+name: Generate GitHub Token
+description: >
+  Generates a GitHub installation token from a GitHub App, falling back to a
+  Personal Access Token (PAT) when app credentials are not provided.
+  Allows teams to migrate from PATs to GitHub Apps incrementally.
+  Supports the two-app split: pass GIT_CICD_APP_ID / GIT_CICD_APP_PRIVATE_KEY
+  for cross-org CICD repo access, or GIT_GITHUB_APP_ID / GIT_GITHUB_APP_PRIVATE_KEY
+  for consumer org access.
+
+inputs:
+  app-id:
+    description: "GitHub App Client/App ID (optional — if provided together with private-key, takes priority)"
+    required: false
+    default: ""
+  private-key:
+    description: "GitHub App private key PEM (optional)"
+    required: false
+    default: ""
+  token:
+    description: "Personal Access Token fallback (used when app credentials are not provided)"
+    required: false
+    default: ""
+  owner:
+    description: "Org/owner to scope the app token to (defaults to current repo owner)"
+    required: false
+    default: ""
+
+outputs:
+  token:
+    description: "Resolved GitHub token (app installation token or PAT)"
+    value: ${{ steps.resolve.outputs.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate GitHub App installation token
+      id: app-token
+      if: ${{ inputs.app-id != '' && inputs.private-key != '' }}
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+
+    - name: Resolve token
+      id: resolve
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        PAT_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -n "$APP_TOKEN" ]; then
+          echo "token=$APP_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Using GitHub App token"
+        elif [ -n "$PAT_TOKEN" ]; then
+          echo "token=$PAT_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Using Personal Access Token"
+        else
+          echo "🛑 No GitHub token: provide either GitHub App credentials (app-id + private-key) or a PAT (token)."
+          exit 1
+        fi

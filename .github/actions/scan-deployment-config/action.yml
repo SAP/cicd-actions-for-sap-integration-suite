@@ -1,0 +1,178 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-10 - Initial release
+#
+name: Scan Deployment Configuration
+description: |
+  Scans the IntegrationPackages directory in the checked-out repository
+  for Deployment_INTEGRATION_FLOW.json files. Extracts per-IFlow
+  per-environment settings (Deploy, LogLevel, Runtimes) using the same
+  priority chain as the deployment actions. Detects old vs new JSON format.
+
+inputs:
+  packages-dir:
+    description: "Path to the IntegrationPackages directory"
+    required: true
+  environments:
+    description: "JSON array of environment names to extract settings for"
+    required: true
+  output-file:
+    description: "Path to write the output JSON file"
+    required: true
+
+outputs:
+  file:
+    description: "Path to the output JSON file containing git config data"
+    value: ${{ steps.scan.outputs.file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Scan deployment configuration files
+      id: scan
+      shell: bash
+      env:
+        PACKAGES_DIR: ${{ inputs.packages-dir }}
+        ENVIRONMENTS: ${{ inputs.environments }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+      run: |
+        echo "📂 Scanning deployment configurations..."
+        echo "   Directory: $PACKAGES_DIR"
+        echo "   Environments: $ENVIRONMENTS"
+
+        RESULT='{"packages": []}'
+
+        if [ ! -d "$PACKAGES_DIR" ]; then
+          echo "⚠️ IntegrationPackages directory not found: $PACKAGES_DIR"
+          echo "$RESULT" > "$OUTPUT_FILE"
+          echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        for pkg_dir in "$PACKAGES_DIR"/*/; do
+          [ -d "$pkg_dir" ] || continue
+
+          DIR_NAME=$(basename "$pkg_dir")
+          # Extract package name and ID from directory name (format: Name~ID)
+          PKG_NAME="${DIR_NAME%%~*}"
+          PKG_ID="${DIR_NAME##*~}"
+
+          echo ""
+          echo "  📦 Package: $PKG_NAME ($PKG_ID)"
+
+          DEPLOYMENT_FILE="$pkg_dir/Configuration/Deployment_INTEGRATION_FLOW.json"
+          PKG_IFLOWS='[]'
+          JSON_FORMAT="none"
+
+          if [ -f "$DEPLOYMENT_FILE" ]; then
+            echo "    ✅ Found deployment configuration"
+
+            # Detect JSON format
+            HAS_WRAPPER=$(jq 'has("PackageIntegrationFlowDeployments")' "$DEPLOYMENT_FILE" 2>/dev/null || echo "false")
+
+            if [ "$HAS_WRAPPER" = "true" ]; then
+              # Check if IntegrationFlows array exists and is non-empty
+              IFLOW_COUNT=$(jq '.PackageIntegrationFlowDeployments.IntegrationFlows | length' "$DEPLOYMENT_FILE" 2>/dev/null || echo "0")
+
+              if [ "$IFLOW_COUNT" -eq 0 ]; then
+                # Package exists in Git but has no IFlows — this is normal
+                # (e.g., value mapping packages or packages with no deployable artifacts)
+                echo "    ℹ️ No IFlows in this package (empty IntegrationFlows)"
+                JSON_FORMAT="none"
+              else
+                # Check first IFlow entry to determine old vs new format
+                FIRST_IFLOW=$(jq -c '.PackageIntegrationFlowDeployments.IntegrationFlows[0]' "$DEPLOYMENT_FILE")
+                HAS_ENVIRONMENTS=$(echo "$FIRST_IFLOW" | jq 'has("Environments")')
+                HAS_RANK=$(echo "$FIRST_IFLOW" | jq 'has("Rank")')
+                if [ "$HAS_ENVIRONMENTS" = "true" ] || [ "$HAS_RANK" = "true" ]; then
+                  JSON_FORMAT="new"
+                else
+                  JSON_FORMAT="old"
+                fi
+
+                echo "    📋 JSON format: $JSON_FORMAT"
+              fi
+
+              # Process each IFlow in the deployment file
+              while IFS= read -r iflow_entry; do
+                [ -z "$iflow_entry" ] && continue
+
+                ARTIFACT_ID=$(echo "$iflow_entry" | jq -r '.ArtifactID')
+                ARTIFACT_NAME=$(echo "$iflow_entry" | jq -r '.ArtifactName')
+
+                # Extract per-environment settings
+                ENV_CONFIG='{}'
+
+                for env_name in $(echo "$ENVIRONMENTS" | jq -r '.[]'); do
+                  # Resolve Deploy using priority chain:
+                  # 1. Environments[$ENV].Deploy
+                  # 2. $ENV flat key
+                  # 3. Deploy (default)
+                  DEPLOY=$(echo "$iflow_entry" | jq -r --arg env "$env_name" '
+                    if .Environments[$env].Deploy then .Environments[$env].Deploy
+                    elif .[$env] then .[$env]
+                    else (.Deploy // "false")
+                    end
+                  ')
+
+                  # Resolve LogLevel using priority chain:
+                  # 1. Environments[$ENV].LogLevel
+                  # 2. Top-level LogLevel
+                  # 3. Default: "INFO"
+                  LOGLEVEL=$(echo "$iflow_entry" | jq -r --arg env "$env_name" '
+                    .Environments[$env].LogLevel // .LogLevel // "INFO"
+                  ')
+
+                  # Resolve Runtimes using priority chain:
+                  # 1. Environments[$ENV].Runtimes
+                  # 2. Top-level Runtimes
+                  # 3. Default: "iflmap"
+                  RUNTIMES=$(echo "$iflow_entry" | jq -r --arg env "$env_name" '
+                    .Environments[$env].Runtimes // .Runtimes // "iflmap"
+                  ')
+
+                  ENV_CONFIG=$(echo "$ENV_CONFIG" | jq \
+                    --arg env "$env_name" \
+                    --arg deploy "$DEPLOY" \
+                    --arg loglevel "$LOGLEVEL" \
+                    --arg runtimes "$RUNTIMES" \
+                    '. + {($env): {deploy: $deploy, logLevel: $loglevel, runtimes: $runtimes}}')
+                done
+
+                IFLOW_ENTRY=$(jq -n \
+                  --arg id "$ARTIFACT_ID" \
+                  --arg name "$ARTIFACT_NAME" \
+                  --arg rank "$(echo "$iflow_entry" | jq -r '.Rank // ""')" \
+                  --argjson envConfig "$ENV_CONFIG" \
+                  '{id: $id, name: $name, rank: $rank, environments: $envConfig}')
+
+                PKG_IFLOWS=$(echo "$PKG_IFLOWS" | jq --argjson entry "$IFLOW_ENTRY" '. + [$entry]')
+
+              done < <(jq -c '.PackageIntegrationFlowDeployments.IntegrationFlows[]' "$DEPLOYMENT_FILE" 2>/dev/null)
+
+            else
+              JSON_FORMAT="unknown"
+              echo "    ⚠️ Unknown JSON format"
+            fi
+          else
+            # No deployment configuration file — package has no IFlows
+            # This is normal (e.g., value mapping packages or non-IFlow packages)
+            echo "    ℹ️ No deployment configuration file — package has no IFlows"
+          fi
+
+          PKG_ENTRY=$(jq -n \
+            --arg id "$PKG_ID" \
+            --arg name "$PKG_NAME" \
+            --arg format "$JSON_FORMAT" \
+            --argjson iflows "$PKG_IFLOWS" \
+            '{id: $id, name: $name, jsonFormat: $format, iflows: $iflows}')
+
+          RESULT=$(echo "$RESULT" | jq --argjson pkg "$PKG_ENTRY" '.packages += [$pkg]')
+        done
+
+        echo "$RESULT" > "$OUTPUT_FILE"
+        echo ""
+        echo "✅ Deployment configuration data saved to $OUTPUT_FILE"
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"

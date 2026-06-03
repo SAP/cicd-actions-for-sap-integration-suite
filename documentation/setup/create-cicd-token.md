@@ -1,5 +1,13 @@
 # Create CICD Token
 
+> **⚠️ Backward compatibility only — not required for new installations**
+>
+> The sync workflow and all new admin workflows **require GitHub Apps** (Path A). PATs are only supported for workflows that were already delivered and running before the GitHub Apps migration.
+>
+> For new installations, skip this page. Configure the CICD reader app (`GIT_CICD_APP_ID` + `GIT_CICD_APP_PRIVATE_KEY`) instead — see [Setup GIT Environment → Option A: GitHub Apps](setup-git-env.md).
+
+---
+
 Another Token is required to allow downloading the source from repository cicd-actions
 
 Perform the following steps to create CICD Token

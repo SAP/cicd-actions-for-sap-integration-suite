@@ -1,0 +1,118 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-03-23 - Initial release
+# Executes tests in a provided repository.
+
+name: 'Call CX Run Tests'
+description: 'Calls the customer exit to run tests for the packages or directories in the runners context.'
+
+inputs:
+  cx-active:
+    description: 'Whether the customer exit for running tests is active.'
+    required: true
+    default: 'false'
+  intsuite-repo-path:
+    description: 'Path where the integration suite repository is checked out.'
+    required: true
+  extension-repo-path:
+    description: 'Path where the extension repository is checked out.'
+    required: true
+  cx-repository:
+    description: 'Repository containing the customer exit implementation for running tests.'
+    required: true
+  cx-repository-ref:
+    description: 'Branch, tag or commit to checkout of the customer exit repository.'
+    required: false
+    default: 'main'
+  package-id:
+    description: 'ID of the package to run tests for.'
+    required: true
+  btp-api-url:
+    description: 'URL of the BTP API.'
+    required: true
+  bearer-token:
+    description: 'Bearer token for authenticating against the BTP API.'
+    required: true
+  target-ref:
+    description: 'GIT Target Reference for checkout'
+    required: false
+    default: ''
+  git-cicd-token:
+    description: 'GitHub token for checking out private repositories'
+    required: true
+  mode:
+    description: 'Mode of the package (e.g. PartnerDirectory or IntegrationPackages)'
+    required: false
+    default: ''
+
+outputs:
+  test-results:
+    description: 'Results of the executed tests.'
+    value: ${{ steps.set-output.outputs.test-results }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout current (intsuite) repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.target-ref }}
+        path: ${{ inputs.intsuite-repo-path }}
+
+    - name: Checkout remote extension repository
+      if: ${{ inputs.cx-repository != '' }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.cx-repository }}
+        ref: ${{ inputs.cx-repository-ref }}
+        path: ${{ inputs.extension-repo-path }}
+        token: ${{ inputs.git-cicd-token }}
+
+    - name: Resolve customer exit location
+      id: resolve
+      uses: ./cicd-btp-insuite/.github/actions/resolve-customer-exit
+      with:
+        cx-active: ${{ inputs.cx-active }}
+        exit-action-name: cx-run-tests
+        intsuite-repo-path: ${{ inputs.intsuite-repo-path }}
+        extension-repo-path: ${{ inputs.extension-repo-path }}       
+
+    - name: Call Customer Exit (from intsuite repo)
+      if: ${{ steps.resolve.outputs.source == 'intsuite' }}
+      id: exit-intsuite
+      uses: ./intsuite-repo/.github/actions/cx-run-tests # Action from customer repo
+      with:
+        intsuite-repo-path: ${{ inputs.intsuite-repo-path }}
+        package-id: ${{ inputs.package-id }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        bearer-token: ${{ inputs.bearer-token }}
+        mode: ${{ inputs.mode }}
+
+    - name: Call Customer Exit (from extension repo)
+      if: ${{ steps.resolve.outputs.source == 'extension' }}
+      id: exit-extension
+      uses: ./cx-extension-repo/.github/actions/cx-run-tests # Action from customer repo
+      with:
+        intsuite-repo-path: ${{ inputs.intsuite-repo-path }}
+        extension-repo-path: ${{ inputs.extension-repo-path }}
+        package-id: ${{ inputs.package-id }}
+        btp-api-url: ${{ inputs.btp-api-url }}
+        bearer-token: ${{ inputs.bearer-token }}  
+        mode: ${{ inputs.mode }}
+
+    - name: Set output
+      id: set-output
+      if: ${{ steps.resolve.outputs.source != 'none' }}
+      shell: bash
+      run: |
+        if [ "${{ steps.exit-intsuite.outputs.test-results }}" != "" ]; then
+          echo "Setting test-results output from intsuite exit"
+          echo "test-results=${{ steps.exit-intsuite.outputs.test-results }}" >> $GITHUB_OUTPUT
+        elif [ "${{ steps.exit-extension.outputs.test-results }}" != "" ]; then
+          echo "Setting test-results output from extension exit"
+          echo "test-results=${{ steps.exit-extension.outputs.test-results }}" >> $GITHUB_OUTPUT
+        else
+          echo "No test results found from either exit implementation"
+        fi

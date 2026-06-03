@@ -3,6 +3,7 @@
 #
 # Version History:
 # 1.0.0 - 2026-03-13 - Initial release
+# 1.1.0 - 2026-04-24 - Change merge method from squash to merge to preserve individual commit history and authors
 #
 
 name: 'Manage Release Pull Request'
@@ -117,7 +118,7 @@ runs:
             -f title="$PR_TITLE" \
             -f head="$SOURCE_BRANCH" \
             -f base="$TARGET_BRANCH" \
-            -f body="Automated release PR for **${RELEASE_NAME}**.\n\nThis PR was created by the release workflow. It will be automatically squash-merged if there are no conflicts." 2>&1)
+            -f body="Automated release PR for **${RELEASE_NAME}**.\n\nThis PR was created by the release workflow. It will be automatically merged if there are no conflicts." 2>&1)
           
           if [ $? -ne 0 ]; then
             # Check if the error is "no commits between branches" (nothing to merge)
@@ -210,15 +211,15 @@ runs:
           exit 0
         fi
 
-        # ─── Step 6: Perform squash merge ───
-        echo "🔀 Performing squash merge of PR #$PR_NUMBER..."
-        
+        # ─── Step 6: Perform merge ───
+        echo "🔀 Performing merge of PR #$PR_NUMBER..."
+
         merge_response=$(gh api --hostname "$GH_HOSTNAME" \
           -H "Accept: application/vnd.github+json" \
           -X PUT "/repos/${{ github.repository }}/pulls/$PR_NUMBER/merge" \
-          -f merge_method="squash" \
+          -f merge_method="merge" \
           -f commit_title="Release ${RELEASE_NAME} (#${PR_NUMBER})" \
-          -f commit_message="Squash merge of ${SOURCE_BRANCH} into ${TARGET_BRANCH} for release ${RELEASE_NAME}" 2>&1)
+          -f commit_message="Merge ${SOURCE_BRANCH} into ${TARGET_BRANCH} for release ${RELEASE_NAME}" 2>&1)
         
         if [ $? -ne 0 ]; then
           echo "❌ Failed to merge PR #$PR_NUMBER"
@@ -238,7 +239,7 @@ runs:
         fi
 
         echo ""
-        echo "✅ Successfully squash-merged PR #$PR_NUMBER"
+        echo "✅ Successfully merged PR #$PR_NUMBER"
         echo "   Merge SHA: $MERGE_SHA"
         echo "pr-state=merged" >> $GITHUB_OUTPUT
         echo "merge-sha=$MERGE_SHA" >> $GITHUB_OUTPUT

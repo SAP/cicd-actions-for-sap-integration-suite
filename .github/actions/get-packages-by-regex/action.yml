@@ -1,0 +1,78 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-10 - Initial release
+#
+name: Get Packages by Regex
+description: |
+  Fetches all Integration Packages from BTP Integration Suite and filters
+  them by a regex pattern applied to the Package ID or Name. Returns a JSON
+  array of matching packages with their ID and Name.
+
+inputs:
+  bearer-token:
+    description: "BEARER Token to access Integration Suite Artifacts"
+    required: true
+  btp-api-url:
+    description: "URL on BTP to access APIs"
+    required: true
+  package-regex:
+    description: "Regex pattern to filter Package IDs or Names (default: .* matches all)"
+    required: false
+    default: ".*"
+
+outputs:
+  packages:
+    description: "JSON array of matching packages [{Id, Name}]"
+    value: ${{ steps.get-packages.outputs.packages }}
+  count:
+    description: "Number of matching packages"
+    value: ${{ steps.get-packages.outputs.count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch and filter packages
+      id: get-packages
+      shell: bash
+      env:
+        BEARER_TOKEN: ${{ inputs.bearer-token }}
+        BTP_API_URL: ${{ inputs.btp-api-url }}
+        PACKAGE_REGEX: ${{ inputs.package-regex }}
+      run: |
+        echo "📦 Fetching packages from $BTP_API_URL..."
+        echo "   Package filter regex: ${PACKAGE_REGEX:-.*}"
+
+        # Default regex to match all if not set
+        if [ -z "$PACKAGE_REGEX" ]; then
+          PACKAGE_REGEX=".*"
+        fi
+
+        # Fetch all packages
+        pkg_response=$(curl -s -w "\n%{http_code}" -X GET \
+          "$BTP_API_URL/api/v1/IntegrationPackages?\$format=json" \
+          -H "Authorization: $BEARER_TOKEN")
+
+        HTTP_STATUS=$(echo "$pkg_response" | tail -n1)
+        PKG_BODY=$(echo "$pkg_response" | sed '$d')
+
+        if [ "$HTTP_STATUS" != "200" ]; then
+          echo "❌ Failed to fetch packages (HTTP $HTTP_STATUS)"
+          echo "$PKG_BODY"
+          exit 1
+        fi
+
+        # Filter packages by regex on ID or Name and extract ID + Name
+        FILTERED_PACKAGES=$(echo "$PKG_BODY" | jq -c --arg regex "$PACKAGE_REGEX" '
+          [.d.results[] | select((.Id | test($regex)) or (.Name | test($regex))) | {Id: .Id, Name: .Name}]
+        ')
+
+        PACKAGE_COUNT=$(echo "$FILTERED_PACKAGES" | jq 'length')
+        echo "✅ Found $PACKAGE_COUNT packages matching regex '$PACKAGE_REGEX'"
+
+        # List matched packages
+        echo "$FILTERED_PACKAGES" | jq -r '.[] | "  📦 \(.Name) (\(.Id))"'
+
+        echo "packages=$FILTERED_PACKAGES" >> "$GITHUB_OUTPUT"
+        echo "count=$PACKAGE_COUNT" >> "$GITHUB_OUTPUT"

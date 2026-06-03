@@ -1,0 +1,261 @@
+# Copyright (c) 2026 SAP SE or an SAP affiliate
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-04-13 - Initial release with slurpfile for ARG_MAX safety, null-safe value lookups, foundOnEnvironments array per package
+#
+name: Merge Dashboard Data
+description: |
+  Merges BTP runtime data (per-environment JSON files) with Git deployment
+  configuration data into a single consolidated JSON file. The output JSON
+  contains all packages and IFlows discovered on BTP tenants, enriched with
+  Git deployment configuration. This consolidated file can be used for
+  dashboard generation or imported into Excel for further analysis.
+
+inputs:
+  btp-data-dir:
+    description: "Directory containing btp-data-*.json files (one per environment)"
+    required: true
+  git-data-file:
+    description: "Path to the git-data.json file from scan-deployment-config"
+    required: true
+  environments:
+    description: "JSON array of environment names"
+    required: true
+  output-file:
+    description: "Path to write the consolidated JSON file"
+    required: false
+    default: "docs/dashboard-data.json"
+
+outputs:
+  file:
+    description: "Path to the generated consolidated JSON file"
+    value: ${{ steps.merge.outputs.file }}
+  btp-package-count:
+    description: "Number of packages discovered on BTP"
+    value: ${{ steps.merge.outputs.btp-package-count }}
+  git-only-package-count:
+    description: "Number of packages found only in Git (not on BTP)"
+    value: ${{ steps.merge.outputs.git-only-package-count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Merge all data into consolidated JSON
+      id: merge
+      shell: bash
+      env:
+        BTP_DATA_DIR: ${{ inputs.btp-data-dir }}
+        GIT_DATA_FILE: ${{ inputs.git-data-file }}
+        ENVIRONMENTS: ${{ inputs.environments }}
+        OUTPUT_FILE: ${{ inputs.output-file }}
+      run: |
+        echo "📊 Merging dashboard data..."
+
+        # ── Create temp directory for intermediate files (avoids ARG_MAX) ──
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "$TMP_DIR"' EXIT
+
+        # ── Collect all BTP data into a single merged array ──
+        BTP_DATA='[]'
+        for f in "$BTP_DATA_DIR"/btp-data-*/btp-data-*.json "$BTP_DATA_DIR"/btp-data-*.json; do
+          [ -f "$f" ] || continue
+          BTP_DATA=$(jq -s '.[0] + [.[1]]' <(echo "$BTP_DATA") "$f")
+        done
+
+        # ── Load Git data ──
+        GIT_DATA='{"packages":[]}'
+        if [ -f "$GIT_DATA_FILE" ]; then
+          GIT_DATA=$(<"$GIT_DATA_FILE")
+        fi
+
+        ENV_LIST=$(echo "$ENVIRONMENTS" | jq -r '.[]')
+
+        echo "  Environments: $(echo "$ENVIRONMENTS" | jq -r 'join(", ")')"
+        echo "  BTP data entries: $(echo "$BTP_DATA" | jq 'length')"
+        echo "  Git packages: $(echo "$GIT_DATA" | jq '.packages | length')"
+
+        # ── Write large data to temp files to avoid ARG_MAX limits ──
+        printf '%s' "$BTP_DATA" > "$TMP_DIR/btp_data.json"
+        printf '%s' "$GIT_DATA" > "$TMP_DIR/git_data.json"
+
+        # ── Build unified package list from BTP data ──
+        UNIFIED_PACKAGES=$(jq -c '
+          [.[].packages[]? | {id: .id, name: .name}]
+          | group_by(.id)
+          | map(.[0])
+          | sort_by(.id)
+        ' "$TMP_DIR/btp_data.json")
+        UNIFIED_PKG_COUNT=$(echo "$UNIFIED_PACKAGES" | jq 'length')
+        echo "  Unified BTP packages: $UNIFIED_PKG_COUNT"
+
+        printf '%s' "$UNIFIED_PACKAGES" > "$TMP_DIR/unified_packages.json"
+
+        # ── Find Git-only packages (in Git but not seen on any BTP env) ──
+        GIT_ONLY_PACKAGES=$(jq -c --slurpfile btp "$TMP_DIR/unified_packages.json" '
+          [.packages[] | . as $gpkg |
+            select([$btp[0][] | .id] | index($gpkg.id) | not)
+          ]
+        ' "$TMP_DIR/git_data.json")
+        GIT_ONLY_PKG_COUNT=$(echo "$GIT_ONLY_PACKAGES" | jq 'length')
+        if [ "$GIT_ONLY_PKG_COUNT" -gt 0 ]; then
+          echo "  Git-only packages (not on any BTP tenant): $GIT_ONLY_PKG_COUNT"
+        fi
+
+        printf '%s' "$GIT_ONLY_PACKAGES" > "$TMP_DIR/git_only_packages.json"
+
+        # ── Extract environment URLs from BTP data ──
+        ENV_URLS=$(jq -c '[.[] | {key: .environment, value: (.btpIsUrl // "")}] | from_entries' "$TMP_DIR/btp_data.json")
+        printf '%s' "$ENV_URLS" > "$TMP_DIR/env_urls.json"
+
+        # ── Build consolidated JSON ──
+        # For each unified BTP package, build a rich object with all iflows
+        # and per-environment data from both BTP and Git sources.
+        # Uses --slurpfile to read large data from files instead of passing
+        # via command-line arguments (which would hit ARG_MAX limits).
+        CONSOLIDATED=$(jq -n \
+          --argjson envs "$ENVIRONMENTS" \
+          --slurpfile btp_data "$TMP_DIR/btp_data.json" \
+          --slurpfile git_data "$TMP_DIR/git_data.json" \
+          --slurpfile unified_packages "$TMP_DIR/unified_packages.json" \
+          --slurpfile git_only_packages "$TMP_DIR/git_only_packages.json" \
+          --slurpfile env_urls "$TMP_DIR/env_urls.json" \
+          --arg generated "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        '{
+          generated: $generated,
+          environments: $envs,
+          environmentUrls: $env_urls[0],
+          packages: [
+            # BTP-discovered packages
+            ($unified_packages[0][] | . as $pkg |
+            {
+              id: $pkg.id,
+              name: $pkg.name,
+              source: "btp",
+              foundOnEnvironments: [
+                $envs[] as $e |
+                select([$btp_data[0][] | select(.environment == $e) | .packages[]? | .id] | index($pkg.id) | . != null)
+                | $e
+              ],
+              gitConfig: (
+                $git_data[0].packages | map(select(.id == $pkg.id)) | first // null
+                | if . then {
+                    found: true,
+                    jsonFormat: .jsonFormat
+                  } else {
+                    found: false,
+                    jsonFormat: null
+                  } end
+              ),
+              iflows: (
+                # Unified iflows from BTP
+                ([ $btp_data[0][].packages[]? | select(.id == $pkg.id) | .iflows[]? | {id: .id, name: .name} ]
+                  | group_by(.id) | map(.[0]) | sort_by(.name)) as $btp_iflows |
+                # Git-only iflows for this package
+                (($git_data[0].packages | map(select(.id == $pkg.id)) | first // {iflows:[]})
+                  | [.iflows[]? | . as $gi | select([$btp_iflows[] | .id] | index($gi.id) | not)]
+                ) as $git_only_iflows |
+                [
+                  ($btp_iflows[] | . as $iflow | {
+                    id: $iflow.id,
+                    name: $iflow.name,
+                    source: "btp",
+                    hasGitConfig: (
+                      [$git_data[0].packages | map(select(.id == $pkg.id)) | first // {iflows:[]} | .iflows[]? | .id]
+                      | index($iflow.id) | . != null
+                    ),
+                    environments: (
+                      [ $envs[] | . as $env | {
+                        key: $env,
+                        value: {
+                          deploy: ([
+                            $git_data[0].packages | map(select(.id == $pkg.id)) | first // {iflows:[]}
+                            | .iflows[]? | select(.id == $iflow.id) | .environments[$env].deploy
+                          ] | first // null),
+                          logLevel: ([
+                            $git_data[0].packages | map(select(.id == $pkg.id)) | first // {iflows:[]}
+                            | .iflows[]? | select(.id == $iflow.id) | .environments[$env].logLevel
+                          ] | first // null),
+                          runtimeStatus: ([
+                            $btp_data[0][] | select(.environment == $env) | .packages[]? | select(.id == $pkg.id)
+                            | .iflows[]? | select(.id == $iflow.id) | .runtimeStatus
+                          ] | first // null),
+                          runtimeVersion: ([
+                            $btp_data[0][] | select(.environment == $env) | .packages[]? | select(.id == $pkg.id)
+                            | .iflows[]? | select(.id == $iflow.id) | .runtimeVersion
+                          ] | first // null)
+                        }
+                      }] | from_entries
+                    )
+                  }),
+                  ($git_only_iflows[] | . as $iflow | {
+                    id: $iflow.id,
+                    name: $iflow.name,
+                    source: "git-only",
+                    hasGitConfig: true,
+                    environments: (
+                      [ $envs[] | . as $env | {
+                        key: $env,
+                        value: {
+                          deploy: ($iflow.environments[$env].deploy // null),
+                          logLevel: ($iflow.environments[$env].logLevel // null),
+                          runtimeStatus: null,
+                          runtimeVersion: null
+                        }
+                      }] | from_entries
+                    )
+                  })
+                ]
+              )
+            }),
+            # Git-only packages
+            ($git_only_packages[0][] | . as $pkg | {
+              id: $pkg.id,
+              name: $pkg.name,
+              source: "git-only",
+              gitConfig: {
+                found: true,
+                jsonFormat: $pkg.jsonFormat
+              },
+              iflows: [
+                ($pkg.iflows[]? | . as $iflow | {
+                  id: $iflow.id,
+                  name: $iflow.name,
+                  source: "git-only",
+                  hasGitConfig: true,
+                  environments: (
+                    [ $envs[] | . as $env | {
+                      key: $env,
+                      value: {
+                        deploy: ($iflow.environments[$env].deploy // null),
+                        logLevel: ($iflow.environments[$env].logLevel // null),
+                        runtimeStatus: null,
+                        runtimeVersion: null
+                      }
+                    }] | from_entries
+                  )
+                })
+              ]
+            })
+          ],
+          summary: {
+            btpPackageCount: ($unified_packages[0] | length),
+            gitOnlyPackageCount: ($git_only_packages[0] | length),
+            totalPackageCount: (($unified_packages[0] | length) + ($git_only_packages[0] | length))
+          }
+        }')
+
+        # Ensure output directory exists
+        mkdir -p "$(dirname "$OUTPUT_FILE")"
+
+        # Write consolidated JSON
+        echo "$CONSOLIDATED" | jq '.' > "$OUTPUT_FILE"
+
+        echo "✅ Consolidated dashboard data written to: $OUTPUT_FILE"
+        echo "  Total packages: $(echo "$CONSOLIDATED" | jq '.summary.totalPackageCount')"
+        echo "  BTP packages: $(echo "$CONSOLIDATED" | jq '.summary.btpPackageCount')"
+        echo "  Git-only packages: $(echo "$CONSOLIDATED" | jq '.summary.gitOnlyPackageCount')"
+
+        echo "file=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
+        echo "btp-package-count=$UNIFIED_PKG_COUNT" >> "$GITHUB_OUTPUT"
+        echo "git-only-package-count=$GIT_ONLY_PKG_COUNT" >> "$GITHUB_OUTPUT"
