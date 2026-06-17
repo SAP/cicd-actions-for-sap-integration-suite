@@ -10,6 +10,7 @@ name: Download CPI Package into GIT
 
 on:
   workflow_call:
+  workflow_dispatch:
     inputs:
       workflow-ref:
         description: "GIT Reference Workflow should run in"
