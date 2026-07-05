@@ -105,30 +105,9 @@ runs:
           echo "location=$FINAL_ZIP" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Detect GitHub Server Type
+    - name: Upload ZIP artifact
       if: ${{ inputs.attach-zip == 'true' }}
-      shell: bash
-      run: |
-        echo "🔍 Detecting GitHub server type..."
-        echo "   Server URL: ${{ github.server_url }}"
-        if [[ "${{ github.server_url }}" == *"github.com"* ]] || [[ "${{ github.server_url }}" == *"ghe.com"* ]]; then
-          echo "✅ Detected: GitHub Cloud (github.com or ghe.com)"
-          echo "   → Using upload-artifact@v4"
-        else
-          echo "✅ Detected: GitHub Enterprise Server"
-          echo "   → Using upload-artifact@v3"
-        fi
-
-    - name: Upload ZIP artifact (v4 - GitHub Cloud)
-      if: ${{ inputs.attach-zip == 'true' && (contains(github.server_url, 'github.com') || contains(github.server_url, 'ghe.com')) }}
       uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.prepare-zip.outputs.package_dir_name }}
-        path: ${{ steps.prepare-zip.outputs.location }}
-
-    - name: Upload ZIP artifact (v3 - GitHub Enterprise Server)
-      if: ${{ inputs.attach-zip == 'true' && !contains(github.server_url, 'github.com') && !contains(github.server_url, 'ghe.com') }}
-      uses: actions/upload-artifact@v3
       with:
         name: ${{ steps.prepare-zip.outputs.package_dir_name }}
         path: ${{ steps.prepare-zip.outputs.location }}
