@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Get Package Name
         id: get-name
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Resolve Package Name from ID
         id: resolve
@@ -65,7 +65,7 @@ jobs:
           package-name: ${{ steps.resolve.outputs.name }}
       
       - name: Upload Backup
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: package-${{ steps.resolve.outputs.name }}
           path: ${{ runner.temp }}/pkg-123-456.zip
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Get Names for Multiple Packages
         id: names

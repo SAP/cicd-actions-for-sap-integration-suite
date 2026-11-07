@@ -86,14 +86,14 @@ runs:
   using: 'composite'
   steps:
     - name: Checkout current (intsuite) repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         ref: ${{ inputs.target-ref }}
         path: ${{ inputs.intsuite-repo-path }}
 
     - name: Checkout remote extension repository
       if: ${{ inputs.cx-repository != '' }}
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: ${{ inputs.cx-repository }}
         ref: ${{ inputs.cx-repository-ref }}

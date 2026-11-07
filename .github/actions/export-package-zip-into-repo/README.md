@@ -26,10 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Download Package ZIP
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: integration-package-zip
       
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Download and Extract Package
         uses: ./.github/actions/unzip-package-into-repo

@@ -58,7 +58,7 @@ jobs:
       test-results: ${{ steps.call-exit.outputs.test-results }}
     steps:
       - name: Checkout cicd-actions repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: my-org/cicd-actions
           ref: v1

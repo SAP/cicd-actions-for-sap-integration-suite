@@ -54,7 +54,7 @@ jobs:
 
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
