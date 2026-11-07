@@ -1,0 +1,9 @@
+{
+  "name": "dashboard-markdown",
+  "label": "BTP Dashboard Generator (Markdown)",
+  "type": "additive",
+  "description": "BTP Dashboard Generator — Markdown status pages committed to dashboard/ (for private repositories where GitHub Pages would be public)",
+  "workflows": [
+    "btp-dashboard-markdown.yml"
+  ]
+}

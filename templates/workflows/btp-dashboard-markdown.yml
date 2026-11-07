@@ -1,0 +1,426 @@
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-11-06 - Copy of btp-dashboard-generator.yml that commits Markdown (dashboard/README.md,
+#                      dashboard/roles.md) instead of publishing GitHub Pages, which are public on
+#                      GitHub Team. Data collection jobs are unchanged.
+#
+# This is a wrapper workflow with no inline code.
+# All logic is delegated to reusable composite actions.
+#
+
+name: (Admin) BTP Dashboard Generator (Markdown)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 0 * * *' # Every day at 00:30 UTC
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ──────────────────────────────────────────────
+  # Job 1: Discover which GitHub environments exist
+  # ──────────────────────────────────────────────
+  discover-environments:
+    name: Discover Environments
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    outputs:
+      environments: ${{ steps.discover.outputs.environments }}
+    steps:
+      - name: Validate GitHub App configuration
+        shell: bash
+        env:
+          APP_ID: ${{ vars.GIT_GITHUB_APP_ID }}
+          CICD_APP_ID: ${{ vars.GIT_CICD_APP_ID }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+          PACKAGE_REGEX: ${{ vars.PACKAGE_REGEX }}
+        run: |
+          [ -z "$APP_ID" ] && echo "🛑 GIT_GITHUB_APP_ID is not set. This workflow requires GitHub App authentication." && exit 1
+          echo "✅ GitHub App ID configured"
+          [ -z "$CICD_APP_ID" ] && echo "🛑 GIT_CICD_APP_ID is not set. Required for cross-org access to the CICD repository." && exit 1
+          echo "✅ CICD App ID configured"
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "✅ CICD ref: $CICD_REF"
+          [ -z "$PACKAGE_REGEX" ] && echo "🛑 PACKAGE_REGEX is not set. Set this variable to restrict the dashboard to specific packages (e.g. MyPackage.*)." && exit 1
+          echo "✅ Package regex: $PACKAGE_REGEX"
+
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Checkout cicd-actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          ref: ${{ vars.GIT_CICD_REF }}
+          path: cicd-actions
+          sparse-checkout: .github/actions
+
+      - name: Generate GitHub App token — consumer org
+        id: app-token-suite
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Diagnose environments API access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token-suite.outputs.token }}
+          GH_API_URL: ${{ github.api_url }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          echo "Token prefix: ${GH_TOKEN:0:8}... (len=${#GH_TOKEN})"
+          echo "Endpoint: $GH_API_URL/repos/$GH_REPO/environments"
+          HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GH_API_URL/repos/$GH_REPO/environments")
+          echo "HTTP status: $HTTP"
+          echo "--- Response headers ---"
+          curl -sI \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GH_API_URL/repos/$GH_REPO/environments" | grep -iE "x-accepted|x-github|x-oauth|x-ratelimit|status|content-type" || true
+
+      - name: Discover environments
+        id: discover
+        uses: ./cicd-actions/.github/actions/discover-environments
+        with:
+          github-token: ${{ steps.app-token-suite.outputs.token }}
+          github-api-url: ${{ github.api_url }}
+          github-repository: ${{ github.repository }}
+
+  # ──────────────────────────────────────────────
+  # Job 2: Collect BTP runtime data per environment
+  # ──────────────────────────────────────────────
+  collect-btp-data:
+    name: Collect BTP Data (${{ matrix.environment }})
+    needs: [discover-environments]
+    if: ${{ needs.discover-environments.outputs.environments != '[]' }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.discover-environments.outputs.environments) }}
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Checkout cicd-actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          ref: ${{ vars.GIT_CICD_REF }}
+          path: cicd-actions
+          sparse-checkout: .github/actions
+
+      - name: Get OAuth Token
+        id: get-token
+        uses: ./cicd-actions/.github/actions/get-token
+        with:
+          btp-api-user: ${{ vars.BTP_API_USER }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          btp-tec-user: ${{ vars.BTP_TEC_USER }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+          btp-token-url: ${{ vars.BTP_TOKEN_URL }}
+
+      - name: Get packages matching regex
+        id: get-packages
+        uses: ./cicd-actions/.github/actions/get-packages-by-regex
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ vars.BTP_API_URL }}
+          package-regex: ${{ vars.PACKAGE_REGEX }}
+
+      - name: Get IFlow runtime status
+        id: get-runtime
+        uses: ./cicd-actions/.github/actions/get-iflow-runtime-status
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ vars.BTP_API_URL }}
+          packages: ${{ steps.get-packages.outputs.packages }}
+          environment: ${{ matrix.environment }}
+          output-file: ${{ runner.temp }}/btp-data-${{ matrix.environment }}.json
+          btp-is-url: ${{ vars.BTP_IS_URL }}
+
+      - name: Upload BTP data artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: btp-data-${{ matrix.environment }}
+          path: ${{ runner.temp }}/btp-data-${{ matrix.environment }}.json
+          retention-days: 1
+
+  # ──────────────────────────────────────────────
+  # Job 3: Collect Git configuration data
+  # ──────────────────────────────────────────────
+  collect-git-data:
+    name: Collect Git Configuration Data
+    needs: [discover-environments]
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Checkout cicd-actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          ref: ${{ vars.GIT_CICD_REF }}
+          path: cicd-actions
+          sparse-checkout: .github/actions
+
+      - name: Checkout development branch
+        uses: actions/checkout@v7
+        with:
+          ref: development
+          path: btp-insuite
+
+      - name: Scan deployment configuration
+        id: scan-config
+        uses: ./cicd-actions/.github/actions/scan-deployment-config
+        with:
+          packages-dir: btp-insuite/IntegrationPackages
+          environments: ${{ needs.discover-environments.outputs.environments }}
+          output-file: ${{ runner.temp }}/git-data.json
+
+      - name: Upload Git data artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: git-data
+          path: ${{ runner.temp }}/git-data.json
+          retention-days: 1
+
+  # ──────────────────────────────────────────────
+  # Job 4: Generate Dashboard
+  # ──────────────────────────────────────────────
+
+          directory: suite-repo
+
+  # ──────────────────────────────────────────────
+  # Job 4.5: Collect IFlow Roles data (DEV only)
+  # ──────────────────────────────────────────────
+  collect-roles-data:
+    name: Collect IFlow Roles (DEV)
+    needs: [discover-environments]
+    if: ${{ needs.discover-environments.outputs.environments != '[]' }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    environment: ${{ fromJson(needs.discover-environments.outputs.environments)[0] }}
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Checkout cicd-actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          ref: ${{ vars.GIT_CICD_REF }}
+          path: cicd-actions
+          sparse-checkout: .github/actions
+
+      - name: Checkout development branch
+        uses: actions/checkout@v7
+        with:
+          ref: development
+          path: btp-insuite
+
+      - name: Get OAuth Token
+        id: get-token
+        uses: ./cicd-actions/.github/actions/get-token
+        with:
+          btp-api-user: ${{ vars.BTP_API_USER }}
+          BTP_API_PASSWORD: ${{ secrets.BTP_API_PASSWORD }}
+          btp-tec-user: ${{ vars.BTP_TEC_USER }}
+          BTP_TEC_PASSWORD: ${{ secrets.BTP_TEC_PASSWORD }}
+          btp-token-url: ${{ vars.BTP_TOKEN_URL }}
+
+      - name: Get packages matching regex
+        id: get-packages
+        uses: ./cicd-actions/.github/actions/get-packages-by-regex
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ vars.BTP_API_URL }}
+          package-regex: ${{ vars.PACKAGE_REGEX }}
+
+      - name: Scan IFlow roles
+        id: scan-roles
+        uses: ./cicd-actions/.github/actions/scan-iflow-roles
+        with:
+          bearer-token: ${{ steps.get-token.outputs.token }}
+          btp-api-url: ${{ vars.BTP_API_URL }}
+          packages: ${{ steps.get-packages.outputs.packages }}
+          environment: ${{ fromJson(needs.discover-environments.outputs.environments)[0] }}
+          packages-dir: ${{ github.workspace }}/btp-insuite/IntegrationPackages
+          output-file: ${{ runner.temp }}/roles-data.json
+          btp-is-url: ${{ vars.BTP_IS_URL }}
+
+      - name: Upload roles data artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: roles-data
+          path: ${{ runner.temp }}/roles-data.json
+          retention-days: 1
+
+  # ──────────────────────────────────────────────
+  # Job 4.6: Generate IFlow Roles Page
+  # ──────────────────────────────────────────────
+  # ──────────────────────────────────────────────
+  # Job 5: Render Markdown and commit it to main
+  # ──────────────────────────────────────────────
+  generate-markdown:
+    name: Generate Markdown Dashboard
+    needs: [discover-environments, collect-btp-data, collect-git-data, collect-roles-data]
+    if: ${{ always() && needs.discover-environments.result == 'success' }}
+    runs-on: ${{ vars.RUNS_ON && fromJson(vars.RUNS_ON) || 'ubuntu-latest' }}
+    steps:
+      - name: Resolve CICD org
+        id: cicd-org
+        shell: bash
+        env:
+          ORGREPO: ${{ vars.GIT_CICD_ORGREPO }}
+          CICD_REF: ${{ vars.GIT_CICD_REF }}
+        run: |
+          [ -z "$CICD_REF" ] && echo "🛑 GIT_CICD_REF is not set. Set this variable to the cicd-actions ref to use (e.g. v1)." && exit 1
+          echo "owner=${ORGREPO%%/*}" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token — CICD org
+        id: app-token-cicd
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_CICD_APP_ID }}
+          private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
+          owner: ${{ steps.cicd-org.outputs.owner }}
+
+      - name: Generate GitHub App token — consumer org
+        id: app-token-suite
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GIT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
+
+      - name: Checkout cicd-actions
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.GIT_CICD_ORGREPO }}
+          token: ${{ steps.app-token-cicd.outputs.token }}
+          ref: ${{ vars.GIT_CICD_REF }}
+          path: cicd-actions
+          sparse-checkout: .github/actions
+
+      - name: Checkout main branch
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ steps.app-token-suite.outputs.token }}
+          path: suite-repo
+
+      - name: Download all BTP data artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: btp-data-*
+          merge-multiple: false
+
+      - name: Download Git data artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: git-data
+          path: artifacts/git-data
+
+      - name: Download roles data artifact
+        if: ${{ needs.collect-roles-data.result == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: roles-data
+          path: artifacts/roles-data
+
+      - name: Merge dashboard data
+        uses: ./cicd-actions/.github/actions/merge-dashboard-data
+        with:
+          btp-data-dir: artifacts
+          git-data-file: artifacts/git-data/git-data.json
+          environments: ${{ needs.discover-environments.outputs.environments }}
+          output-file: suite-repo/dashboard/dashboard-data.json
+
+      - name: Generate Markdown dashboard
+        uses: ./cicd-actions/.github/actions/generate-dashboard-markdown
+        with:
+          dashboard-data-file: suite-repo/dashboard/dashboard-data.json
+          roles-data-file: ${{ needs.collect-roles-data.result == 'success' && 'artifacts/roles-data/roles-data.json' || '' }}
+          output-dir: suite-repo/dashboard
+          github-repository: ${{ github.repository }}
+
+      - name: Commit and push dashboard
+        uses: ./cicd-actions/.github/actions/git-commit
+        with:
+          comment: "📊 Update Integration Suite Dashboard (Markdown) [skip ci]"
+          directory: suite-repo

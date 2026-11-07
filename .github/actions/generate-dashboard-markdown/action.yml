@@ -1,0 +1,42 @@
+# Licensed under the Apache License, Version 2.0
+#
+# Version History:
+# 1.0.0 - 2026-11-06 - Initial release: Markdown variant of generate-dashboard + generate-roles-page
+#
+name: Generate Dashboard (Markdown)
+description: |
+  Renders the Integration Suite dashboard and the IFlow roles page as Markdown
+  (README.md and roles.md) from the same data files as the HTML generators
+  (dashboard-data.json from merge-dashboard-data, roles-data.json from
+  scan-iflow-roles), with the same status rules and layout. Meant to be committed
+  to the repository, where GitHub renders it with the repository's access control —
+  for organizations where GitHub Pages would be public.
+
+inputs:
+  dashboard-data-file:
+    description: "Path to dashboard-data.json (from merge-dashboard-data)"
+    required: true
+  roles-data-file:
+    description: "Path to roles-data.json (from scan-iflow-roles). Empty = no roles page."
+    required: false
+    default: ""
+  output-dir:
+    description: "Directory to write README.md and roles.md to"
+    required: false
+    default: "dashboard"
+  github-repository:
+    description: "owner/repo shown in the header"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Render Markdown dashboard
+      shell: bash
+      env:
+        DASHBOARD_DATA_FILE: ${{ inputs.dashboard-data-file }}
+        ROLES_DATA_FILE: ${{ inputs.roles-data-file }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+        GH_REPO: ${{ inputs.github-repository }}
+      run: python3 "$GITHUB_ACTION_PATH/render.py" "$DASHBOARD_DATA_FILE" "${ROLES_DATA_FILE:--}" "$OUTPUT_DIR" "$GH_REPO"
