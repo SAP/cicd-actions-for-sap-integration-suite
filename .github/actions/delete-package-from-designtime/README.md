@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Delete Package from CPI
         uses: ./.github/actions/delete-package-from-cpi
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Delete Package on Demand
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'delete'

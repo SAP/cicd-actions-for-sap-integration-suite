@@ -123,7 +123,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token-cicd
         if: ${{ vars.GIT_CICD_APP_ID != '' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
@@ -141,7 +141,7 @@ jobs:
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Checkout cicd-actions-intsuite repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.git-cicd-orgrepo }}
           path: cicd-btp-insuite
@@ -149,7 +149,7 @@ jobs:
           ref: ${{ inputs.workflow-ref }}
 
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target-ref }}
           path: btp-insuite

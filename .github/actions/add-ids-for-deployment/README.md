@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       
       - name: Add IDs for Deployment
         uses: ./.github/actions/add-ids-for-deployment

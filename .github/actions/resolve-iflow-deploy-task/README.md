@@ -63,12 +63,12 @@ When `should-deploy` is `"false"`, the file contains an empty `deploytasks` arra
 ```yaml
 steps:
   - name: Checkout consumer repo
-    uses: actions/checkout@v4
+    uses: actions/checkout@v7
     with:
       path: btp-insuite
 
   - name: Checkout cicd-actions repo
-    uses: actions/checkout@v4
+    uses: actions/checkout@v7
     with:
       repository: ${{ vars.GIT_CICD_ORGREPO }}
       ref: ${{ vars.GIT_CICD_REF }}

@@ -63,14 +63,14 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
           owner: ${{ steps.cicd-org.outputs.owner }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -80,7 +80,7 @@ jobs:
 
       - name: Generate GitHub App token — consumer org
         id: app-token-suite
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
@@ -141,14 +141,14 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
           owner: ${{ steps.cicd-org.outputs.owner }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -186,7 +186,7 @@ jobs:
           btp-is-url: ${{ vars.BTP_IS_URL }}
 
       - name: Upload BTP data artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: btp-data-${{ matrix.environment }}
           path: ${{ runner.temp }}/btp-data-${{ matrix.environment }}.json
@@ -212,14 +212,14 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
           owner: ${{ steps.cicd-org.outputs.owner }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -228,7 +228,7 @@ jobs:
           sparse-checkout: .github/actions
 
       - name: Checkout development branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: development
           path: btp-insuite
@@ -242,7 +242,7 @@ jobs:
           output-file: ${{ runner.temp }}/git-data.json
 
       - name: Upload Git data artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: git-data
           path: ${{ runner.temp }}/git-data.json
@@ -269,7 +269,7 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
@@ -277,13 +277,13 @@ jobs:
 
       - name: Generate GitHub App token — consumer org
         id: app-token-suite
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -292,21 +292,21 @@ jobs:
           sparse-checkout: .github/actions
 
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           token: ${{ steps.app-token-suite.outputs.token }}
           path: suite-repo
 
       - name: Download all BTP data artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: btp-data-*
           merge-multiple: false
 
       - name: Download Git data artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: git-data
           path: artifacts/git-data
@@ -357,14 +357,14 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
           owner: ${{ steps.cicd-org.outputs.owner }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -373,7 +373,7 @@ jobs:
           sparse-checkout: .github/actions
 
       - name: Checkout development branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: development
           path: btp-insuite
@@ -409,7 +409,7 @@ jobs:
           btp-is-url: ${{ vars.BTP_IS_URL }}
 
       - name: Upload roles data artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: roles-data
           path: ${{ runner.temp }}/roles-data.json
@@ -436,7 +436,7 @@ jobs:
 
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
@@ -444,13 +444,13 @@ jobs:
 
       - name: Generate GitHub App token — consumer org
         id: app-token-suite
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
 
       - name: Checkout cicd-actions
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           token: ${{ steps.app-token-cicd.outputs.token }}
@@ -459,14 +459,14 @@ jobs:
           sparse-checkout: .github/actions
 
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           token: ${{ steps.app-token-suite.outputs.token }}
           path: suite-repo
 
       - name: Download roles data artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: roles-data
           path: artifacts/roles-data
@@ -499,25 +499,25 @@ jobs:
     steps:
       - name: Generate GitHub App token — consumer org
         id: app-token-suite
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
 
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           token: ${{ steps.app-token-suite.outputs.token }}
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

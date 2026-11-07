@@ -72,7 +72,7 @@ jobs:
       - name: Generate GitHub App token — CICD org
         id: app-token-cicd
         if: ${{ vars.GIT_CICD_APP_ID != '' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_CICD_APP_ID }}
           private-key: ${{ secrets.GIT_CICD_APP_PRIVATE_KEY }}
@@ -90,7 +90,7 @@ jobs:
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Checkout cicd-actions repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.GIT_CICD_ORGREPO }}
           ref: ${{ vars.GIT_CICD_REF }}
@@ -100,7 +100,7 @@ jobs:
       - name: Generate GitHub App token — consumer org
         id: app-token-org
         if: ${{ vars.GIT_GITHUB_APP_ID != '' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.GIT_GITHUB_APP_ID }}
           private-key: ${{ secrets.GIT_GITHUB_APP_PRIVATE_KEY }}
