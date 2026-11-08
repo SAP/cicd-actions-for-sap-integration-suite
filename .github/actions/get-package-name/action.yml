@@ -65,6 +65,7 @@ runs:
         echo "Extracted PackageName: $PACKAGENAME"
         
         PACKAGENAME="${PACKAGENAME// /_}"
+        PACKAGENAME="${PACKAGENAME//\//_}"
         echo "Modified PackageName (no spaces): $PACKAGENAME"
         
         echo "name=$PACKAGENAME" >> "$GITHUB_OUTPUT"
